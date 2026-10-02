@@ -60,6 +60,9 @@ Render (予定)                               ← 閲覧用 Web。常時起動�
 
 ## コマンド
 
+ローカル環境: uv は `~/.local/bin/uv`。データリポジトリは `../keirin-data` に clone してある。
+収集ジョブを手動で動かすときは `gh workflow run collect.yml --repo keirin-platform/keirin-data [-f date=YYYY-MM-DD -f to=...]`。
+
 ```bash
 uv sync                                   # 依存のインストール
 uv run pytest -q                          # テスト
@@ -106,8 +109,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 
 - [x] API 調査、規約確認
 - [x] 収集基盤（collect / rebuild / github-commit、CI、再利用可能ワークフロー）
-- [ ] keirin-data リポジトリの作成と、caller ワークフローの設置
-- [ ] GitHub Actions（海外の IP）から keirin.jp に届くかを確認する
-- [ ] 直近4ヶ月の backfill（日次ジョブが自動で進める。完了したらチェックする）
+- [x] keirin-data リポジトリの作成と、caller ワークフローの設置（2026-10-02）
+- [x] GitHub Actions（海外の IP）から keirin.jp に届くことを確認（2026-10-02。ローカル実行と出力が完全に一致し、データのコミットは Verified）
+- [ ] 直近4ヶ月の backfill（2026-10-02 に開始。日次ジョブが自動で進める。完了したらチェックする）
 - [ ] 閲覧用 Web（Render）。データリポジトリから読む方法を決める（読み取り専用の deploy key を使い、build 時に clone する案）
 - [ ] オーナーから機能の要望を受けたら、ここに追記する
