@@ -9,7 +9,9 @@ restricted with Community Cloud's viewer allow-list. Locally:
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -42,7 +44,16 @@ def _data_version(data_dir: Path) -> str:
 
 @st.cache_resource(show_spinner="データを読み込んでいます…")
 def _store(data_dir: str, version: str) -> Store:
-    return Store(Path(data_dir), CachedClient(KeirinClient(min_interval=1.0)))
+    # Interactive use: give up quickly and show an error instead of spinning for minutes.
+    client = KeirinClient(min_interval=1.0, timeout=8.0, max_retries=2, backoff=2.0)
+    return Store(Path(data_dir), CachedClient(client))
+
+
+def _fetch[T](store: Store, day: date, what: str, fn: Callable[..., T], *args) -> T:
+    if store.is_collected(day):
+        return fn(*args)
+    with st.spinner(f"KEIRIN.JP から{what}を取得しています…"):
+        return fn(*args)
 
 
 def card_frame(rows: list[dict], with_results: bool) -> pd.DataFrame:
@@ -115,7 +126,7 @@ def render(store: Store, today: date) -> None:
 
     st.subheader(f"{day.month}月{day.day}日（{WEEKDAYS[day.weekday()]}）")
     try:
-        meetings = store.meetings(day)
+        meetings = _fetch(store, day, "開催情報", store.meetings, day)
         if not meetings:
             st.info("開催はありません。")
             return
@@ -127,7 +138,7 @@ def render(store: Store, today: date) -> None:
             for m in meetings
         }  # fmt: skip
         venue = st.selectbox("開催", list(labels), format_func=labels.get)
-        races = store.races(day, venue)
+        races = _fetch(store, day, "レース一覧", store.races, day, venue)
         if not races:
             st.info("レース情報がありません。")
             return
@@ -137,9 +148,15 @@ def render(store: Store, today: date) -> None:
         )
         if race_no is None:
             return
-        meeting, race, rows = store.card(day, venue, race_no)
-    except (NotFound, KeirinApiError) as e:
+        meeting, race, rows = _fetch(store, day, "出走表", store.card, day, venue, race_no)
+    except NotFound as e:
         st.error(f"表示できませんでした: {e}")
+        return
+    except KeirinApiError as e:
+        st.error(
+            f"KEIRIN.JP から取得できませんでした（{e}）。時間をおいて再読み込みしてください。"
+            "収集済みの日（左の日付で過去の日）は表示できます。"
+        )
         return
 
     st.markdown(
@@ -167,6 +184,8 @@ def render(store: Store, today: date) -> None:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     st.set_page_config(page_title="競輪 補正得点", page_icon="🚴", layout="wide")
     data_dir = os.environ.get("KEIRIN_DATA_DIR", ".")
     render(_store(data_dir, _data_version(Path(data_dir))), today_jst())
