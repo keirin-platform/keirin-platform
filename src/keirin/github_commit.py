@@ -3,6 +3,11 @@
 Commits created with ``createCommitOnBranch`` are signed by GitHub and show
 as "Verified", which lets the data workflow produce signed commits with
 nothing but the workflow's GITHUB_TOKEN (no GPG key in CI).
+
+The commit is based on the branch head *at commit time*, not on the checkout:
+a collection run takes up to half an hour and other commits (e.g. merged
+config changes) may land meanwhile. The changed paths are data files written
+only by the collector, so applying them on top of the newer head is safe.
 """
 
 from __future__ import annotations
@@ -26,6 +31,12 @@ mutation($input: CreateCommitOnBranchInput!) {
   createCommitOnBranch(input: $input) { commit { oid url } }
 }
 """
+HEAD_QUERY = """
+query($owner: String!, $name: String!, $ref: String!) {
+  repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { target { oid } } }
+}
+"""
+MAX_ATTEMPTS = 3
 
 
 @dataclass
@@ -83,35 +94,52 @@ def commit_changes(
     if not changes:
         log.info("nothing to commit")
         return []
-    head = _git(repo_dir, "rev-parse", "HEAD").strip()
     oids = []
     headers = {"Authorization": f"bearer {token}"}
     with httpx.Client(headers=headers, timeout=120, transport=transport) as http:
+
+        def graphql(query: str, variables: dict) -> dict:
+            resp = http.post(GRAPHQL_URL, json={"query": query, "variables": variables})
+            resp.raise_for_status()
+            return resp.json()
+
+        def remote_head() -> str:
+            owner, name = repo.split("/", 1)
+            body = graphql(
+                HEAD_QUERY, {"owner": owner, "name": name, "ref": f"refs/heads/{branch}"}
+            )
+            return body["data"]["repository"]["ref"]["target"]["oid"]
+
+        head = remote_head()
         batches = _batches(repo_dir, changes)
         for i, batch in enumerate(batches, 1):
             headline = message if len(batches) == 1 else f"{message} ({i}/{len(batches)})"
-            variables = {
-                "input": {
-                    "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
-                    "expectedHeadOid": head,
-                    "message": {"headline": headline},
-                    "fileChanges": {
-                        "additions": [
-                            {
-                                "path": p,
-                                "contents": base64.b64encode((repo_dir / p).read_bytes()).decode(),
-                            }
-                            for p in batch.additions
-                        ],
-                        "deletions": [{"path": p} for p in batch.deletions],
-                    },
-                }
+            file_changes = {
+                "additions": [
+                    {"path": p, "contents": base64.b64encode((repo_dir / p).read_bytes()).decode()}
+                    for p in batch.additions
+                ],
+                "deletions": [{"path": p} for p in batch.deletions],
             }
-            resp = http.post(GRAPHQL_URL, json={"query": MUTATION, "variables": variables})
-            resp.raise_for_status()
-            body = resp.json()
-            if body.get("errors"):
-                raise RuntimeError(f"GraphQL error: {body['errors']}")
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                body = graphql(
+                    MUTATION,
+                    {
+                        "input": {
+                            "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+                            "expectedHeadOid": head,
+                            "message": {"headline": headline},
+                            "fileChanges": file_changes,
+                        }
+                    },
+                )
+                if not body.get("errors"):
+                    break
+                if attempt == MAX_ATTEMPTS:
+                    raise RuntimeError(f"GraphQL error: {body['errors']}")
+                # Most likely the branch moved since we read its head: re-read and retry.
+                log.warning("commit attempt %d failed (%s), retrying", attempt, body["errors"])
+                head = remote_head()
             commit = body["data"]["createCommitOnBranch"]["commit"]
             head = commit["oid"]
             oids.append(head)
