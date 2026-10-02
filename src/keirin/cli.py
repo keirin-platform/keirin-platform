@@ -10,7 +10,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from keirin import analysis, github_commit, storage
+from keirin import analysis, github_commit, rating, storage
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
@@ -95,14 +95,50 @@ def cmd_corrections(args: argparse.Namespace) -> int:
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
     history = History.from_tables(args.data_dir, since=window_start(args.date))
-    result = analysis.evaluate(args.data_dir, args.date, args.to, history)
+    ratings_for = None
+    if args.rating:
+        orders = rating.load_orders(args.data_dir)
+        state: dict[str, dict[str, float]] = {}
+
+        def ratings_for(day: date) -> dict[str, float]:
+            fitted = rating.fit(orders, day, half_life=args.half_life, init=state.get("theta"))
+            state["theta"] = fitted.theta  # warm start for the next day
+            return fitted.theta
+
+    result = analysis.evaluate(
+        args.data_dir,
+        args.date,
+        args.to,
+        history,
+        ratings_for=ratings_for,
+        require_complete=not args.include_incomplete,
+    )
     for group, scores in result.items():
-        official, corrected = scores["official"], scores["corrected"]
-        print(
-            f"{group:9s} pairs={official.pairs:8.0f} "
-            f"official={official.rate:.4f} corrected={corrected.rate:.4f} "
-            f"diff={corrected.rate - official.rate:+.4f}"
-        )
+        pairs = next(iter(scores.values())).pairs
+        rates = " ".join(f"{m}={c.rate:.4f}" for m, c in scores.items())
+        print(f"{group:9s} pairs={pairs:8.0f} {rates}")
+    return 0
+
+
+def cmd_rating(args: argparse.Namespace) -> int:
+    as_of = args.as_of or today_jst()
+    fitted = rating.fit(rating.load_orders(args.data_dir), as_of, half_life=args.half_life)
+    cards = rating.latest_cards(args.data_dir, as_of)
+    maps = fitted.calibration({r: float(c["score"]) for r, c in cards.items()})
+    rows = sorted(fitted.theta.items(), key=lambda kv: kv[1], reverse=True)
+    for pool in ("men", "L"):
+        members = [
+            (r, t) for r, t in rows
+            if (fitted.tier.get(r) == "L") == (pool == "L") and fitted.weight[r] >= args.min_races
+        ]  # fmt: skip
+        print(f"== {pool} ({len(members)} riders, calibration={maps.get(pool)})")
+        for r, t in members[: args.top]:
+            card = cards.get(r, {})
+            print(
+                f"{card.get('racer_name', r):10s} {card.get('class', ''):3s} "
+                f"theta={t:+.3f} score_eq={fitted.score_equivalent(r, maps)} "
+                f"official={card.get('score', '')} races={fitted.weight[r]:.1f}"
+            )
     return 0
 
 
@@ -162,7 +198,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date", type=date.fromisoformat, required=True, help="first day")
     p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
     p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.add_argument("--rating", action="store_true", help="also evaluate the rating")
+    p.add_argument("--half-life", type=float, default=rating.DEFAULT_HALF_LIFE)
+    p.add_argument(
+        "--include-incomplete",
+        action="store_true",
+        help="also count races whose score windows are not fully collected",
+    )
     p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("rating", help="fit and print rider ratings (opponent-aware)")
+    p.add_argument("--as-of", type=date.fromisoformat, help="use races before this day")
+    p.add_argument("--half-life", type=float, default=rating.DEFAULT_HALF_LIFE)
+    p.add_argument("--top", type=int, default=20)
+    p.add_argument("--min-races", type=float, default=3.0)
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_rating)
 
     p = sub.add_parser("estimate-deltas", help="estimate tier deltas from a class change")
     p.add_argument("--boundary", type=date.fromisoformat, required=True, help="e.g. 2026-07-01")

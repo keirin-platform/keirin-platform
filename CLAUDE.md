@@ -52,6 +52,9 @@
      - 同じ級班の中でのグレードによる偏り
      - 2027-01〜03 の実地検証
 
+3. **戦った相手の強さを考慮した評価**（2026-10-03）。オーナーの判断で**レーティング方式**（Plackett–Luce）で進める。
+   詳しくは [docs/rating.md](docs/rating.md)。精度が公式の得点を上回ったら、ビューアに列を足す。
+
 ## 構成
 
 ```
@@ -116,6 +119,8 @@ uv run keirin rebuild --data-dir ../keirin-data      # raw からテーブルを
 uv run keirin corrections --date 2026-09-30 --data-dir ../keirin-data --changed-only  # 補正つき出走表
 uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --data-dir ../keirin-data      # 公式と補正後の精度比較
 uv run keirin estimate-deltas --boundary 2026-07-01 --data-dir ../keirin-data           # Δ の推定
+uv run keirin rating --as-of 2026-11-01 --top 20 --data-dir ../keirin-data              # レーティング上位
+uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --rating --data-dir ../keirin-data  # レーティングも評価
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
 ```
@@ -130,7 +135,8 @@ src/keirin/
   storage.py        raw と CSV のファイル配置、読み書き
   github_commit.py  GitHub API で署名付きコミットを作る
   score.py          競走得点の昇降級補正（tier、Δ、窓、History）
-  analysis.py       補正つき出走表、精度評価、Δ の推定
+  analysis.py       補正つき出走表、精度評価（公式、補正後、レーティング）、Δ の推定
+  rating.py         相手の強さを考慮したレーティング（Plackett–Luce、時間減衰、得点換算）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
   viewer.py         出走表ビューア（Streamlit）。「出走表」タブ（補正得点）と「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
@@ -151,6 +157,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - 2026-10-02 収集ジョブはデータリポジトリから再利用可能ワークフローを呼ぶ方式にした。Secret が不要で、ログが Private 側に残り、コミットが Verified になるため。
 - 2026-10-02 PR は CI 通過後に Claude がマージする（オーナー指定）。方式は merge commit。
 - 2026-10-03 記事のために、収集範囲を 2025-12-01 からに広げた（オーナー判断）。ペースは変えない（1回あたり最大10日分）。
+- 2026-10-03 相手の強さの考慮は、単純補正ではなく、**レーティング（Plackett–Luce）**で行う（オーナー承認）。
+  単純補正は、番組の平均点で反映済みの部分を二重に数えるため採らない。ビューアへの表示は、精度を確かめてから行う。
 - 2026-10-03 記事の公開先を、いったん Zenn に選定したあと、**はてなブログ**（公式の GitHub 連携ワークフロー）に変更した。
   理由は、読者層が競輪の内容に合うことと、オーナーの既存の Zenn 技術アカウントと分けられること。セットアップは記事を書く時期に行う。
 - 2026-10-02 backfill は直近4ヶ月（オーナー指定。競輪の予想では直近4ヶ月の成績がよく使われるため）。サイトの負荷を抑えるため、日次ジョブで1回あたり最大10日ずつ埋める。
@@ -178,6 +186,9 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - [x] GitHub Actions（海外の IP）から keirin.jp に届くことを確認（2026-10-02。ローカル実行と出力が完全に一致し、データのコミットは Verified）
 - [ ] backfill: 2025-12-01 から（2026-10-02 に開始。日次ジョブが自動で進め、11/5 ごろに完了する見込み）
 - [ ] 記事用の分析（backfill の完了後。テーマ案は「オーナーの要望」2. を参照）
+- [x] レーティングの計算と評価のコマンド（`rating.py`）
+- [ ] 2026-10-11 ごろ: レーティングの試作を評価する（級班をまたいでつながったか、半減期）
+- [ ] 2026-11 上旬: レーティングを本格的に評価する。公式の得点に勝てばビューアに表示する。改善の候補は docs/rating.md
 - [x] 補正ロジック（`score.py`）、評価と Δ 推定のコマンド
 - [x] 出走表ビューア（`keirin.viewer`、Streamlit）。収集済みの日は CSV から（結果つき）、未収集の日は keirin.jp から取得して、補正得点を表示する
 - [ ] Streamlit Community Cloud へのデプロイ（オーナーがアプリを作成する。手順は docs/deploy-streamlit.md）

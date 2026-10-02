@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import statistics
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -91,34 +92,41 @@ def evaluate(
     end: date,
     history: History,
     deltas: dict[tuple[str, str], float] = STEP_DELTAS,
+    ratings_for: Callable[[date], dict[str, float]] | None = None,
+    require_complete: bool = True,
 ) -> dict[str, dict[str, Concordance]]:
     """Pairwise concordance between score order and finishing order, per race.
 
-    Returns {"all" | "affected": {"official" | "corrected": Concordance}} where
-    "affected" are races with at least one rider whose score was corrected.
-    Only races where every rider's window is fully covered by our data count.
+    Returns {"all" | "affected": {metric: Concordance}} for the metrics "official",
+    "corrected" and, when `ratings_for(day)` is given, "rating" (it must only use
+    races before `day`). All metrics are scored on the same pairs: riders without
+    a rating are left out. "affected" are races with at least one corrected score.
+    With `require_complete`, only races whose riders' score windows are fully
+    collected count.
     """
-    result = {
-        k: {"official": Concordance(), "corrected": Concordance()} for k in ("all", "affected")
-    }
+    keys = {"official": "score", "corrected": "corrected"} | (
+        {"rating": "rating"} if ratings_for else {}
+    )
+    result = {k: {m: Concordance() for m in keys} for k in ("all", "affected")}
     for day in date_range(start, end):
+        theta = ratings_for(day) if ratings_for else {}
         races: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
         for row in corrected_card_rows(data_dir, day, history, deltas):
+            row["rating"] = theta.get(row["racer_id"])
             races[(row["venue_code"], row["race_no"])].append(row)
         for rows in races.values():
-            rows = [r for r in rows if r["finish_pos"] is not None and r["score"] is not None]
-            if len(rows) < 2 or not all(r["complete"] for r in rows):
+            rows = [
+                r for r in rows
+                if r["finish_pos"] is not None and all(r[k] is not None for k in keys.values())
+            ]  # fmt: skip
+            if len(rows) < 2 or (require_complete and not all(r["complete"] for r in rows)):
                 continue
             groups = ["all"] + (["affected"] if any(r["adjustment"] for r in rows) else [])
             for i, a in enumerate(rows):
                 for b in rows[i + 1 :]:
                     for g in groups:
-                        result[g]["official"].add(
-                            a["score"], b["score"], a["finish_pos"], b["finish_pos"]
-                        )
-                        result[g]["corrected"].add(
-                            a["corrected"], b["corrected"], a["finish_pos"], b["finish_pos"]
-                        )
+                        for m, k in keys.items():
+                            result[g][m].add(a[k], b[k], a["finish_pos"], b["finish_pos"])
     return result
 
 
