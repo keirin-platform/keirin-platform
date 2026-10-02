@@ -55,3 +55,33 @@ def test_collect_skips_days_already_collected(tmp_path, monkeypatch, fake_client
 
     monkeypatch.setattr(cli, "KeirinClient", ExplodingClient)
     assert cli.main(["collect", "--date", DAY, "--data-dir", str(tmp_path)]) == 0
+
+
+def test_collect_max_days_fetches_newest_missing_days_first(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(cli, "today_jst", lambda: date(2026, 1, 20))
+    storage.write_raw(tmp_path, fetch_day(fake_client, date.fromisoformat(DAY)))  # 01-10
+    fetched = []
+
+    def fake_fetch_day(client, day):
+        fetched.append(day)
+        return {"date": day.isoformat(), "responses": []}
+
+    class NullClient:
+        request_count = 0
+
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+    monkeypatch.setattr(cli, "KeirinClient", NullClient)
+    monkeypatch.setattr(cli, "fetch_day", fake_fetch_day)
+    args = ["collect", "--date", "2026-01-08", "--to", "2026-01-12", "--max-days", "3"]
+    assert cli.main([*args, "--data-dir", str(tmp_path)]) == 0
+    assert fetched == [date(2026, 1, 12), date(2026, 1, 11), date(2026, 1, 9)]
+    assert storage.raw_path(tmp_path, date(2026, 1, 9)).exists()
+    assert not storage.raw_path(tmp_path, date(2026, 1, 8)).exists()

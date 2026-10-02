@@ -25,11 +25,23 @@ def cmd_collect(args: argparse.Namespace) -> int:
         log.error("refusing to collect %s or later: results are not final yet", today_jst())
         return 2
     data_dir: Path = args.data_dir
+    collected = 0
+    pending = []
+    for day in date_range(start, end):
+        if args.force or not storage.raw_path(data_dir, day).exists():
+            pending.append(day)
+        else:
+            collected += 1
+    # Newest first so that recent data lands first when --max-days spreads a backfill
+    # over several runs.
+    pending.sort(reverse=True)
+    if args.max_days is not None:
+        pending = pending[: args.max_days]
+    log.info("%s..%s: %d days to fetch, %d already collected", start, end, len(pending), collected)
+    if not pending:
+        return 0
     with KeirinClient(min_interval=args.min_interval) as client:
-        for day in date_range(start, end):
-            if storage.raw_path(data_dir, day).exists() and not args.force:
-                log.info("%s: already collected, skipping", day)
-                continue
+        for day in pending:
             try:
                 bundle = fetch_day(client, day)
             except KeirinApiError as e:
@@ -77,6 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--to", type=date.fromisoformat, help="last day of a range (inclusive)")
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.add_argument("--force", action="store_true", help="re-fetch days already collected")
+    p.add_argument(
+        "--max-days", type=int, help="fetch at most N days this run (newest missing days first)"
+    )
     p.add_argument(
         "--min-interval",
         type=float,
