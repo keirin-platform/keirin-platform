@@ -6,7 +6,7 @@
 - 収集したデータは私的利用の範囲にとどめるため、Private リポジトリに保存する（このリポジトリにはコードだけを置く）
 - データスキーマ: [docs/data-schema.md](docs/data-schema.md)
 - 昇降級を補正した競走得点: [docs/score-correction.md](docs/score-correction.md)
-- 出走表ビューア（Render）: [docs/deploy-render.md](docs/deploy-render.md)
+- 出走表ビューア（Streamlit Community Cloud）: [docs/deploy-streamlit.md](docs/deploy-streamlit.md)
 
 ```bash
 uv sync --all-extras
