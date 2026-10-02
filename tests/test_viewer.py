@@ -60,3 +60,17 @@ def test_keirin_jp_failure_is_shown_instead_of_hanging(tmp_path, monkeypatch):
     monkeypatch.setenv("KEIRIN_TEST_FAIL", "1")
     at = run_app(tmp_path, monkeypatch)
     assert at.error and "KEIRIN.JP から取得できませんでした" in at.error[0].value
+
+
+def test_result_tab(tmp_path, monkeypatch):
+    at = run_app(tmp_path, monkeypatch)
+    assert any("結果はまだありません" in i.value for i in at.info)
+
+    monkeypatch.setenv("KEIRIN_TEST_FINISHED", "1")
+    at = run_app(tmp_path, monkeypatch)
+    order = at.dataframe[1].value
+    assert list(order["車"]) == [2, 1, 3]  # finishers first, the disqualified rider last
+    assert list(order["決まり手"])[:2] == ["差し", "逃げ"]
+    payouts = at.dataframe[2].value
+    assert list(payouts["払戻金"]) == ["1,230円", "150円", "320円"]
+    assert any("天候 晴" in m.value for m in at.markdown)

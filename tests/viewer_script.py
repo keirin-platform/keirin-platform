@@ -13,6 +13,8 @@ from keirin.viewer import render
 client = FakeClient()
 client.responses[("JSJ001", MEETING_ENC)]["C0201data"]["C0201race"] = [{"encParaR": race_enc(1)}]
 client.responses[("JSJ006", race_enc(1))]["sensyuTypeInfo"][0]["kyuhan"] = "S2"
+if os.environ.get("KEIRIN_TEST_FINISHED"):
+    client.responses[("JSJ001", MEETING_ENC)]["C0201data"]["C0201race"][0]["rcvKekka"] = "1"
 if os.environ.get("KEIRIN_TEST_FAIL"):
 
     def failing_get(type_, **params):

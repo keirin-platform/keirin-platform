@@ -133,7 +133,7 @@ src/keirin/
   analysis.py       補正つき出走表、精度評価、Δ の推定
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
-  viewer.py         出走表ビューア（Streamlit）
+  viewer.py         出走表ビューア（Streamlit）。「出走表」タブ（補正得点）と「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
 tests/              pytest（conftest.py に架空の API レスポンスがある）
 docs/               API 調査メモ、データスキーマ
 infra/data-repo/    データリポジトリに置くファイルの雛形
@@ -165,6 +165,7 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
     Public（public and searchable）にすると、収集データが誰でも見られて検索にも載り、サイトポリシーの「私的使用」の範囲を超える。
     閲覧できるのは、招待したメールアドレスと、keirin-data にアクセスできる GitHub ユーザーだけ。無料プランの Private アプリ枠は1つで、これが使っている。
   - URL: https://keirin.streamlit.app/（Private）。Community Cloud は deploy key で clone するので、組織で deploy key を有効にする必要がある（2026-10-03、オーナーが設定）。
+  - 当日の結果は、開催ヘッダ（JSJ001 `C0201race[].rcvKekka == "1"`）でレースが終わったのを確認してから JSJ012 を取る（終わっていないレースにはアクセスしない）。
   - ビューアは keirin.jp を1件ずつ取りに行き、タイムアウトは短め（8秒、2回まで）。失敗したら画面にエラーを出す。API 呼び出しと所要時間は Community Cloud のログ（Manage app）に出る。
   - 未収集の日の出走表は表示するときに keirin.jp から取得する（5分キャッシュ、1件ずつ）。
   Δ はまず遠山競輪研究所030の値を暫定で使い、10月下旬に自分たちのデータで推定し直す。

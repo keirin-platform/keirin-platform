@@ -90,3 +90,28 @@ def test_cached_client_reuses_responses():
     now[0] = 61
     cached.get("JSJ057", kday="20260110")
     assert len(inner.calls) == 2
+
+
+def test_result_from_tables(tmp_path):
+    storage.write_tables(tmp_path, D, parse_bundle(fetch_day(FakeClient(), D)))
+    result = Store(tmp_path, None).result(D, "99", 1)
+    assert (result["weather"], result["wind_speed"]) == ("晴", 1.5)
+    order = {e["car_no"]: e for e in result["entries"]}
+    assert (order[2]["finish_pos"], order[2]["kimarite"], order[2]["last_lap"]) == (1, "差し", 11.2)
+    assert order[3]["finish_pos"] is None and order[3]["notes"] == "失格/斜行"
+    assert [(p["bet_type"], p["combination"], p["payout"]) for p in result["payouts"]] == [
+        ("2車単", "2-1", 1230),
+        ("ワイド", "1=2", 150),
+        ("ワイド", "1=3", 320),
+    ]
+
+
+def test_live_result_only_after_the_race(tmp_path, live_client):
+    store = Store(tmp_path, live_client)
+    assert store.result(D, "99", 1) is None  # header says the result is not in yet
+    assert not any(call[0] == "JSJ012" for call in live_client.calls)
+
+    live_client.responses[("JSJ001", MEETING_ENC)]["C0201data"]["C0201race"][0]["rcvKekka"] = "1"
+    result = Store(tmp_path, live_client).result(D, "99", 1)
+    assert [e["car_no"] for e in result["entries"] if e["finish_pos"] == 1] == [2]
+    assert len(result["payouts"]) == 3
