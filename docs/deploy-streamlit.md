@@ -10,8 +10,14 @@
 - 12時間アクセスがないとスリープする。開くと起動ボタンが出る。
 - 当日・翌日など未収集の日の出走表は、表示するときに keirin.jp から取得する（5分キャッシュ、1件ずつ、1秒以上の間隔）。
 - Render 版（FastAPI）も作ったが、Render のカード認証が通らなかったので Streamlit に切り替えた（2026-10-02）。
+- URL: <https://keirin.streamlit.app/>（Private。招待したメールアドレスでログインする）。
+- デプロイのとき、Community Cloud がデータリポジトリに `.devcontainer/`（Codespaces 用）を、オーナーの名前で署名なしのコミットとして追加した。動作には関係ないが、Python を 3.12 に直した。
 
 ## 初回のセットアップ（オーナーの作業）
+0. **組織で deploy key を有効にする**: <https://github.com/organizations/keirin-platform/settings/member_privileges> の **Deploy keys** を **Enabled** にして Save する。
+   - Community Cloud は Private リポジトリを deploy key で clone する。新しい組織では deploy key が既定で無効なので、これをしないと
+     `Failed to download the sources for repository` で起動しない（2026-10-03 に実際に起きた）。
+   - 有効にしたあとは、アプリを **Manage app → ︙ → Reboot app** すると鍵が登録される。だめなら、アプリを削除して作り直す。
 1. <https://share.streamlit.io> を開き、**Continue with GitHub** でサインインする。
    - GitHub の認可画面で、**Private リポジトリへのアクセス**と、**Organization access の keirin-platform（Grant）**を許可する。
 2. 右上の **Create app** → **Deploy a public app from GitHub**（「Yup, I have an app」）を選ぶ。
