@@ -4,15 +4,21 @@ name: collect
 
 on:
   schedule:
-    - cron: "30 18 * * *" # 03:30 JST, after midnight races are settled
+    # 03:30 JST, after midnight races are settled. Each run keeps the last 4 months
+    # complete, fetching at most 10 missing days (newest first).
+    - cron: "30 18 * * *"
   workflow_dispatch:
     inputs:
       date:
-        description: "First day (YYYY-MM-DD). Empty = last 3 days (JST)"
+        description: "First day (YYYY-MM-DD). Empty = rolling 4-month window (JST)"
         required: false
         default: ""
       to:
         description: "Last day (inclusive). Empty = same as date"
+        required: false
+        default: ""
+      max_days:
+        description: "Fetch at most N missing days (newest first). Empty = 10 for the window, no limit for an explicit range"
         required: false
         default: ""
       code_ref:
@@ -32,4 +38,5 @@ jobs:
     with:
       date: ${{ inputs.date || '' }}
       to: ${{ inputs.to || '' }}
+      max_days: ${{ inputs.max_days || '' }}
       code_ref: ${{ inputs.code_ref || 'main' }}
