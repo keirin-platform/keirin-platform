@@ -1,0 +1,3 @@
+# The viewer code, pinned to a keirin-platform commit. Bump the SHA (via PR) when
+# the viewer changes: Streamlit Community Cloud reinstalls only when this file changes.
+keirin[app] @ git+https://github.com/keirin-platform/keirin-platform.git@main

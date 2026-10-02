@@ -7,9 +7,10 @@ Files in this directory are copied into the private data repository
   reusable workflow `keirin-platform/keirin-platform/.github/workflows/collect.yml@main`.
   Run it manually from the Actions tab with `date` / `to` to backfill a range.
 
-- `render.yaml` + `.python-version` — Render Blueprint of the race card viewer.
-  Render deploys the data repository itself and clones the viewer code from
-  keirin-platform at build time, so each data commit redeploys with fresh data.
-  See `docs/deploy-render.md` in keirin-platform.
+- `streamlit_app.py` + `requirements.txt` + `.streamlit/config.toml` — the race
+  card viewer on Streamlit Community Cloud. The viewer code is installed from
+  keirin-platform at the commit pinned in `requirements.txt` (`@main` in this
+  template; pin a SHA in the data repository). Each data commit updates the app.
+  See `docs/deploy-streamlit.md` in keirin-platform.
 
 Data layout: see `docs/data-schema.md` in keirin-platform.
