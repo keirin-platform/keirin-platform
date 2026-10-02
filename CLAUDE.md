@@ -18,6 +18,11 @@
   - merge commit 方式にして、オーナーの鍵で署名したコミットを main の履歴にそのまま残す（merge commit 自体は GitHub が署名する）。PR タイトルも Conventional Commits 形式で書く。
 - 決めたこと、調査結果、仕様の変更はこのファイルに追記する。
 
+## オーナーの要望（機能）
+
+1. **昇級・降級を補正した競走得点を、出走表で確認したい**（最大の目的、2026-10-02）。
+   仕様と調査結果は [docs/score-correction.md](docs/score-correction.md) にある。
+
 ## 構成
 
 ```
@@ -73,6 +78,9 @@ uv run keirin collect --data-dir ../keirin-data
 uv run keirin collect --date 2026-09-01 --to 2026-09-30 --data-dir ../keirin-data   # 期間指定
 uv run keirin collect --date 2026-06-01 --to 2026-10-01 --max-days 10 --data-dir ../keirin-data  # 未取得の日を新しい順に最大10日
 uv run keirin rebuild --data-dir ../keirin-data      # raw からテーブルを作り直す
+uv run keirin corrections --date 2026-09-30 --data-dir ../keirin-data --changed-only  # 補正つき出走表
+uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --data-dir ../keirin-data      # 公式と補正後の精度比較
+uv run keirin estimate-deltas --boundary 2026-07-01 --data-dir ../keirin-data           # Δ の推定
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
 ```
@@ -86,6 +94,8 @@ src/keirin/
   parse.py          raw bundle → テーブル（meetings / races / entries / payouts）
   storage.py        raw と CSV のファイル配置、読み書き
   github_commit.py  GitHub API で署名付きコミットを作る
+  score.py          競走得点の昇降級補正（tier、Δ、窓、History）
+  analysis.py       補正つき出走表、精度評価、Δ の推定
   cli.py            `keirin` コマンド
 tests/              pytest（conftest.py に架空の API レスポンスがある）
 docs/               API 調査メモ、データスキーマ
@@ -104,6 +114,9 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - 2026-10-02 収集ジョブはデータリポジトリから再利用可能ワークフローを呼ぶ方式にした。Secret が不要で、ログが Private 側に残り、コミットが Verified になるため。
 - 2026-10-02 PR は CI 通過後に Claude がマージする（オーナー指定）。方式は merge commit。
 - 2026-10-02 backfill は直近4ヶ月（オーナー指定。競輪の予想では直近4ヶ月の成績がよく使われるため）。サイトの負荷を抑えるため、日次ジョブで1回あたり最大10日ずつ埋める。
+- 2026-10-02 得点の窓が「当月＋前3ヶ月」だとわかったので、収集範囲を「4ヶ月前の月初から」に変えた（10月なら6/1〜）。窓全体と、前の月の出走表の評価に必要な分を確保するため。
+- 2026-10-02 補正方式: 窓内の得点対象レースのうち、別の tier で走ったものを Δ で今の tier に換算する（`score.py`）。
+  Δ はまず遠山競輪研究所030の値を暫定で使い、10月下旬に自分たちのデータで推定し直す。
 
 ## 現状と TODO
 
@@ -112,5 +125,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - [x] keirin-data リポジトリの作成と、caller ワークフローの設置（2026-10-02）
 - [x] GitHub Actions（海外の IP）から keirin.jp に届くことを確認（2026-10-02。ローカル実行と出力が完全に一致し、データのコミットは Verified）
 - [ ] 直近4ヶ月の backfill（2026-10-02 に開始。日次ジョブが自動で進める。完了したらチェックする）
-- [ ] 閲覧用 Web（Render）。データリポジトリから読む方法を決める（読み取り専用の deploy key を使い、build 時に clone する案）
+- [x] 補正ロジック（`score.py`）、評価と Δ 推定のコマンド
+- [ ] 出走表ビューア（Render）: 当日・翌日の出走表を keirin.jp から取得して、補正得点を表示する
+- [ ] 2026-10 下旬: `estimate-deltas --boundary 2026-07-01` で Δ を推定し直して `score.STEP_DELTAS` を更新する。`evaluate` で 9月分を検証する
+- [ ] 期が替わるごと（1月・7月）に Δ を再推定する（4月・10月の下旬）
 - [ ] オーナーから機能の要望を受けたら、ここに追記する
