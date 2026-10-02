@@ -31,9 +31,9 @@ keirin-platform/keirin-platform (Public)   ← このリポジトリ。コード
 keirin-platform/keirin-data (Private)      ← 収集データの置き場
   └─ .github/workflows/collect.yml          上を呼ぶだけの薄い caller（cron は毎日 03:30 JST）
                                              データのリポジトリもマージは Claude が行う
-Render (keirin-viewer, Free)               ← 出走表ビューア。データリポジトリにつないでデプロイし、
-                                             ビルド時にこのリポジトリのコードを clone する
-                                             （データのコミットごとに再デプロイ。詳しくは docs/deploy-render.md）
+Streamlit Community Cloud (無料)           ← 出走表ビューア。データリポジトリの streamlit_app.py を動かす
+                                             ビューアのコードは requirements.txt で SHA を固定して入れる
+                                             （データのコミットごとに最新になる。詳しくは docs/deploy-streamlit.md）
 ```
 
 - **データは Public リポジトリに置かない**。KEIRIN.JP のサイトポリシーで、複製は「私的使用」の範囲までしか認められていないため。
@@ -72,9 +72,8 @@ Render (keirin-viewer, Free)               ← 出走表ビューア。データ
 収集ジョブを手動で動かすときは `gh workflow run collect.yml --repo keirin-platform/keirin-data [-f date=YYYY-MM-DD -f to=...]`。
 
 ```bash
-uv sync --all-extras                      # 依存のインストール（web extra を含む）
-KEIRIN_WEB_AUTH=off KEIRIN_DATA_DIR=../keirin-data \
-  uv run uvicorn --factory keirin.web.app:create_app_from_env --reload   # ビューア（http://127.0.0.1:8000）
+uv sync --all-extras                      # 依存のインストール（app extra = streamlit を含む）
+KEIRIN_DATA_DIR=../keirin-data uv run streamlit run src/keirin/viewer.py   # ビューア
 uv run pytest -q                          # テスト
 uv run ruff check . && uv run ruff format --check .
 
@@ -102,7 +101,8 @@ src/keirin/
   score.py          競走得点の昇降級補正（tier、Δ、窓、History）
   analysis.py       補正つき出走表、精度評価、Δ の推定
   cli.py            `keirin` コマンド
-  web/              出走表ビューア（FastAPI + Jinja2）。store.py: 収集済みの日は CSV、それ以外は keirin.jp から取得
+  store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
+  viewer.py         出走表ビューア（Streamlit）
 tests/              pytest（conftest.py に架空の API レスポンスがある）
 docs/               API 調査メモ、データスキーマ
 infra/data-repo/    データリポジトリに置くファイルの雛形
@@ -122,9 +122,12 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - 2026-10-02 backfill は直近4ヶ月（オーナー指定。競輪の予想では直近4ヶ月の成績がよく使われるため）。サイトの負荷を抑えるため、日次ジョブで1回あたり最大10日ずつ埋める。
 - 2026-10-02 得点の窓が「当月＋前3ヶ月」だとわかったので、収集範囲を「4ヶ月前の月初から」に変えた（10月なら6/1〜）。窓全体と、前の月の出走表の評価に必要な分を確保するため。
 - 2026-10-02 補正方式: 窓内の得点対象レースのうち、別の tier で走ったものを Δ で今の tier に換算する（`score.py`）。
-- 2026-10-02 ビューアは Render のサービスをデータリポジトリに直接つなぐ方式にした。
-  組織の設定で deploy key が無効なうえ、この方式なら秘密情報が要らず、データのコミットごとに自動で最新になるため。
-  未収集の日の出走表は表示するときに keirin.jp から取得する（5分キャッシュ、1件ずつ）。
+- 2026-10-02 ビューアは最初 Render（FastAPI）で作った。しかし Render の本人確認でオーナーのカードが通らなかったので、
+  **Streamlit Community Cloud** に切り替えた（オーナー判断。カード不要で、Private の組織リポジトリから動かせて、閲覧者をメールで制限できる）。
+  FastAPI 版と Render 設定は削除した（git の履歴には残っている）。
+  - アプリはデータリポジトリから動かす（秘密情報は不要。組織の設定で deploy key は無効）。データのコミットごとに最新になる。
+  - **ビューアのコードを変えたら、データリポジトリの `requirements.txt` の SHA を更新する PR も出す**。requirements.txt が変わらないと再インストールされないため。
+  - 未収集の日の出走表は表示するときに keirin.jp から取得する（5分キャッシュ、1件ずつ）。
   Δ はまず遠山競輪研究所030の値を暫定で使い、10月下旬に自分たちのデータで推定し直す。
 
 ## 現状と TODO
@@ -135,8 +138,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - [x] GitHub Actions（海外の IP）から keirin.jp に届くことを確認（2026-10-02。ローカル実行と出力が完全に一致し、データのコミットは Verified）
 - [ ] 直近4ヶ月の backfill（2026-10-02 に開始。日次ジョブが自動で進める。完了したらチェックする）
 - [x] 補正ロジック（`score.py`）、評価と Δ 推定のコマンド
-- [x] 出走表ビューア（`keirin.web`）。収集済みの日は CSV から（結果つき）、未収集の日は keirin.jp から取得して、補正得点を表示する
-- [ ] Render へのデプロイ（オーナーが Blueprint を作成する。手順は docs/deploy-render.md）
+- [x] 出走表ビューア（`keirin.viewer`、Streamlit）。収集済みの日は CSV から（結果つき）、未収集の日は keirin.jp から取得して、補正得点を表示する
+- [ ] Streamlit Community Cloud へのデプロイ（オーナーがアプリを作成する。手順は docs/deploy-streamlit.md）
 - [ ] 2026-10 下旬: `estimate-deltas --boundary 2026-07-01` で Δ を推定し直して `score.STEP_DELTAS` を更新する。`evaluate` で 9月分を検証する
 - [ ] 期が替わるごと（1月・7月）に Δ を再推定する（4月・10月の下旬）
 - [ ] オーナーから機能の要望を受けたら、ここに追記する
