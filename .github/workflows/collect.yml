@@ -23,6 +23,12 @@ on:
         description: Fetch at most N missing days in this run (newest first). Empty = no limit.
         type: string
         default: ""
+      since:
+        description: >-
+          First day of the rolling window (YYYY-MM-DD) when date is empty. Empty = the 1st of
+          the month 4 months ago. Days before it that are already collected are kept anyway.
+        type: string
+        default: ""
       code_ref:
         description: Ref of keirin-platform to run.
         type: string
@@ -61,12 +67,13 @@ jobs:
           DATE: ${{ inputs.date }}
           TO: ${{ inputs.to }}
           MAX_DAYS: ${{ inputs.max_days }}
+          SINCE: ${{ inputs.since }}
         run: |
           if [ -z "$DATE" ]; then
             # Keep everything since the 1st of the month 4 months ago (the score window is the
             # current month + 3 previous; one more month allows evaluating last month's cards).
             # A backfill is spread over several daily runs by MAX_DAYS.
-            DATE=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -4 months" +%F)
+            DATE=${SINCE:-$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -4 months" +%F)}
             TO=$(TZ=Asia/Tokyo date -d 'yesterday' +%F)
             MAX_DAYS=${MAX_DAYS:-10}
           fi
