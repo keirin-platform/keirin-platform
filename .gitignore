@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Collected data must never be committed to this public repository
+/data/
+/raw/
+/tables/
+*.json.gz
+
+# Misc
+.env
+.DS_Store
