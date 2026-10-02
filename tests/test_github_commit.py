@@ -35,16 +35,26 @@ def test_list_changes(tmp_path):
     assert changes.deletions == ["old.txt"]
 
 
-def test_commit_changes_posts_create_commit_on_branch(tmp_path):
-    repo = make_repo(tmp_path)
-    (repo / "new.csv").write_text("a,b\n")
-    head = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
-    requests = []
+class FakeGitHub:
+    """Answers the head query and createCommitOnBranch like the GraphQL API."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
+    def __init__(self, heads, fail_first_commit=False):
+        self.heads = list(heads)  # successive answers of the head query
+        self.fail_first_commit = fail_first_commit
+        self.mutations = []
+        self.requests = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        payload = json.loads(request.content)
+        if "createCommitOnBranch" not in payload["query"]:
+            oid = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
+            return httpx.Response(
+                200, json={"data": {"repository": {"ref": {"target": {"oid": oid}}}}}
+            )
+        self.mutations.append(payload["variables"]["input"])
+        if self.fail_first_commit and len(self.mutations) == 1:
+            return httpx.Response(200, json={"errors": [{"message": "Expected branch head"}]})
         return httpx.Response(
             200,
             json={
@@ -56,23 +66,43 @@ def test_commit_changes_posts_create_commit_on_branch(tmp_path):
             },
         )
 
+
+def test_commit_changes_posts_create_commit_on_branch(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "new.csv").write_text("a,b\n")
+    github = FakeGitHub(heads=["remote-head"])
+
     oids = github_commit.commit_changes(
         repo,
         repo="owner/data",
         branch="main",
         message="chore(data): test",
         token="t0ken",
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(github),
     )
     assert oids == ["abc123"]
-    assert requests[0].headers["authorization"] == "bearer t0ken"
-    payload = json.loads(requests[0].content)["variables"]["input"]
+    assert github.requests[0].headers["authorization"] == "bearer t0ken"
+    payload = github.mutations[0]
     assert payload["branch"] == {"repositoryNameWithOwner": "owner/data", "branchName": "main"}
-    assert payload["expectedHeadOid"] == head
+    # Based on the branch head at commit time, not on the (possibly stale) checkout.
+    assert payload["expectedHeadOid"] == "remote-head"
     assert payload["message"] == {"headline": "chore(data): test"}
     additions = payload["fileChanges"]["additions"]
     assert [a["path"] for a in additions] == ["new.csv"]
     assert base64.b64decode(additions[0]["contents"]) == b"a,b\n"
+
+
+def test_commit_changes_retries_when_the_branch_moved(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "new.csv").write_text("a,b\n")
+    github = FakeGitHub(heads=["old-head", "new-head"], fail_first_commit=True)
+
+    oids = github_commit.commit_changes(
+        repo, repo="o/r", branch="main", message="m", token="t",
+        transport=httpx.MockTransport(github),
+    )  # fmt: skip
+    assert oids == ["abc123"]
+    assert [m["expectedHeadOid"] for m in github.mutations] == ["old-head", "new-head"]
 
 
 def test_commit_changes_noop_without_changes(tmp_path):
