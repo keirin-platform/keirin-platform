@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
 
-from keirin.parse import TIME_SLOTS, card_entries
+from keirin.parse import TIME_SLOTS, card_entries, race_result
 from keirin.score import History
 from keirin.storage import table_path
 
@@ -173,6 +173,51 @@ class Store:
         _rank(rows, "corrected", "rank_corrected")
         return meeting, race, rows
 
+    # --- race result -----------------------------------------------------------------
+
+    def result(self, day: date, venue_code: str, race_no: int) -> Row | None:
+        """Weather, finishing order and payouts; None while the result is not out yet."""
+        if self.is_collected(day):
+            return self._collected_result(day, venue_code, race_no)
+        meeting = self.meeting(day, venue_code)
+        races = self._header_races(meeting)
+        if not 0 < race_no <= len(races) or races[race_no - 1].get("rcvKekka") != "1":
+            return None  # not finished: do not ask keirin.jp for nothing
+        result = race_result(self._live("JSJ012", encp=races[race_no - 1]["encParaR"]))
+        if result is None:
+            return None
+        return {**result, "entries": [_result_entry(e) for e in result["entries"]]}
+
+    def _collected_result(self, day: date, venue_code: str, race_no: int) -> Row | None:
+        def mine(rows: list[Row] | None) -> list[Row]:
+            return [
+                r for r in rows or []
+                if r["venue_code"] == venue_code and int(r["race_no"]) == race_no
+            ]  # fmt: skip
+
+        entries = mine(_read_table(self.data_dir, "entries", day))
+        if not any(e["finish"] or e["notes"] for e in entries):
+            return None
+        race = next(iter(mine(_read_table(self.data_dir, "races", day))), {})
+        return {
+            "weather": race.get("weather", ""),
+            "wind_speed": _num(race.get("wind_speed")),
+            "entries": [_result_entry(e) for e in entries],
+            "payouts": [
+                {
+                    "bet_type": p["bet_type"],
+                    "combination": p["combination"],
+                    "payout": _int(p["payout"]),
+                    "popularity": _int(p["popularity"]),
+                }
+                for p in mine(_read_table(self.data_dir, "payouts", day))
+            ],
+        }
+
+    def _header_races(self, meeting: Row) -> list[Row]:
+        header = self._live("JSJ001", encp=meeting["enc"]).get("C0201data") or {}
+        return header.get("C0201race") or []
+
     def _live_card(self, meeting: Row, race_no: int) -> list[Row]:
         token = self._race_token(meeting, race_no)
         summary = next(
@@ -185,8 +230,7 @@ class Store:
     def _race_token(self, meeting: Row, race_no: int) -> str:
         # The meeting header lists the race tokens in race order, also for upcoming days
         # (JSJ014 answers resultCd=-1 for days that have not started yet).
-        header = self._live("JSJ001", encp=meeting["enc"]).get("C0201data") or {}
-        races = header.get("C0201race") or []
+        races = self._header_races(meeting)
         if 0 < race_no <= len(races) and races[race_no - 1].get("encParaR"):
             return races[race_no - 1]["encParaR"]
         label = f"{race_no}R"
@@ -237,6 +281,21 @@ class Store:
         if self._client is None:
             raise NotFound("live data is disabled")
         return self._client.get(type_, **params)
+
+
+def _result_entry(e: Row) -> Row:
+    return {
+        "car_no": _int(e.get("car_no")),
+        "racer_id": str(e.get("racer_id") or ""),
+        "racer_name": e.get("racer_name") or "",
+        "finish": e.get("finish") or "",
+        "finish_pos": _int(e.get("finish_pos")),
+        "margin": e.get("margin") or "",
+        "last_lap": _num(e.get("last_lap")),
+        "kimarite": e.get("kimarite") or "",
+        "bh": e.get("bh") or "",
+        "notes": e.get("notes") or "",
+    }
 
 
 def _rank(rows: list[Row], key: str, out: str) -> None:

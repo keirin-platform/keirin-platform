@@ -178,6 +178,19 @@ def card_entries(card: dict[str, Any], summary: dict[str, Any] | None = None) ->
     return _entries({}, summary or {}, card, {})
 
 
+def race_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Finishing order and payouts of one race (JSJ012); None before the result is out."""
+    entries = _entries({}, {}, {}, result)
+    if not any(e.get("finish") or e.get("notes") for e in entries):
+        return None
+    return {
+        "weather": _text(result.get("tenki")),
+        "wind_speed": _float(result.get("husoku")),
+        "entries": entries,
+        "payouts": _payouts({}, result),
+    }
+
+
 def _entries(race_base: Row, summary: dict, card: dict, result: dict) -> list[Row]:
     rows: dict[int, Row] = {}
     for s in card.get("sensyuTypeInfo") or []:

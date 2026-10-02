@@ -162,6 +162,20 @@ def render(store: Store, today: date) -> None:
     st.markdown(
         f"### {meeting['venue_name']} {race_no}R　{race['race_class']}　{race['start_time']} 発走"
     )
+    tab_card, tab_result = st.tabs(["出走表", "結果"])
+    with tab_card:
+        _render_card(store, day, rows)
+    with tab_result:
+        try:
+            result = _fetch(store, day, "結果", store.result, day, venue, race_no)
+        except KeirinApiError as e:
+            st.error(f"KEIRIN.JP から結果を取得できませんでした（{e}）。")
+        else:
+            _render_result(result, rows)
+    st.caption("データ出典: KEIRIN.JP（個人利用）。補正得点は推定値です。")
+
+
+def _render_card(store: Store, day: date, rows: list[dict]) -> None:
     start = window_start(day)
     if rows and not all(r["complete"] for r in rows):
         st.warning(
@@ -170,7 +184,6 @@ def render(store: Store, today: date) -> None:
         )
     frame = card_frame(rows, with_results=store.is_collected(day))
     st.dataframe(_style(frame), hide_index=True, width="stretch")
-
     d = STEP_DELTAS
     st.caption(
         "補正得点 = 競走得点 + Σ（別の級班で走ったレースの換算値）÷ 走数。"
@@ -180,7 +193,78 @@ def render(store: Store, today: date) -> None:
         f"A級1・2班→A級3班 {d[('A12', 'A3')]:+.2f}。"
         "「他級走/走数」は窓の中で別の級班で走った回数と、得点対象の走数。"
     )
-    st.caption("データ出典: KEIRIN.JP（個人利用）。補正得点は推定値です。")
+
+
+def result_frame(result: dict, card_rows: list[dict]) -> pd.DataFrame:
+    """Finishing order, with the card's scores to compare against the result."""
+    card = {r["car_no"]: r for r in card_rows}
+
+    def rank(r: dict | None) -> str:
+        if not r or r["rank_official"] is None:
+            return "-"
+        if r["rank_corrected"] != r["rank_official"]:
+            return f"{r['rank_official']}→{r['rank_corrected']}"
+        return str(r["rank_official"])
+
+    entries = sorted(
+        result["entries"],
+        key=lambda e: (e["finish_pos"] is None, e["finish_pos"] or 0, e["car_no"] or 0),
+    )
+    return pd.DataFrame(
+        {
+            "着": [e["finish"] or "-" for e in entries],
+            "車": [e["car_no"] for e in entries],
+            "選手": [e["racer_name"] for e in entries],
+            "着差": [e["margin"] for e in entries],
+            "上がり": [e["last_lap"] for e in entries],
+            "決まり手": [e["kimarite"] for e in entries],
+            "B/H": [e["bh"] for e in entries],
+            "競走得点": [(card.get(e["car_no"]) or {}).get("score") for e in entries],
+            "補正得点": [(card.get(e["car_no"]) or {}).get("corrected") for e in entries],
+            "得点順位": [rank(card.get(e["car_no"])) for e in entries],
+            "状況": [e["notes"] for e in entries],
+        }
+    )
+
+
+def payout_frame(result: dict) -> pd.DataFrame:
+    payouts = result["payouts"]
+    return pd.DataFrame(
+        {
+            "券種": [p["bet_type"] for p in payouts],
+            "組番": [p["combination"] for p in payouts],
+            "払戻金": [f"{p['payout']:,}円" if p["payout"] is not None else "-" for p in payouts],
+            "人気": [p["popularity"] for p in payouts],
+        }
+    )
+
+
+def _render_result(result: dict | None, card_rows: list[dict]) -> None:
+    if result is None:
+        st.info("結果はまだありません。レースが終わると表示されます（最大5分ほど遅れます）。")
+        return
+    weather = "　".join(
+        filter(
+            None,
+            [
+                f"天候 {result['weather']}" if result["weather"] else "",
+                f"風速 {result['wind_speed']:.1f}m" if result["wind_speed"] is not None else "",
+            ],
+        )
+    )
+    if weather:
+        st.markdown(weather)
+    frame = result_frame(result, card_rows)
+    st.dataframe(
+        frame.style.format(
+            {"上がり": "{:.1f}", "競走得点": "{:.2f}", "補正得点": "{:.2f}"}, na_rep=""
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+    if result["payouts"]:
+        st.markdown("#### 払戻金")
+        st.dataframe(payout_frame(result), hide_index=True, width="stretch")
 
 
 def main() -> None:
