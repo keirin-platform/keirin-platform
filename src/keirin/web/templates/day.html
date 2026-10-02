@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ day }} の開催 | 競輪 補正得点{% endblock %}
+{% block content %}
+<h1>{{ day.month }}月{{ day.day }}日（{{ weekday }}）の開催</h1>
+<div class="nav">
+  <a href="/d/{{ prev_day }}">← 前日</a>
+  {% if day != today %}<a href="/d/{{ today }}">今日</a>{% endif %}
+  <a href="/d/{{ next_day }}">翌日 →</a>
+</div>
+{% if meetings %}
+<div class="cards">
+  {% for m in meetings %}
+  <a class="card" href="/d/{{ day }}/{{ m.venue_code }}">
+    <div class="name">{{ m.venue_name }}</div>
+    <div>
+      <span class="badge">{{ m.grade }}</span>
+      <span class="badge">{{ m.day_label }}</span>
+      {% if m.time_slot %}<span class="badge">{{ {"day": "デイ", "night": "ナイター", "midnight": "ミッドナイト", "morning": "モーニング"}.get(m.time_slot, m.time_slot) }}</span>{% endif %}
+    </div>
+    {% if m.title %}<div class="muted">{{ m.title }}</div>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p>開催はありません。</p>
+{% endif %}
+<p class="muted">{% if collected %}収集済みデータを表示しています（結果つき）。{% else %}KEIRIN.JP から取得した最新の情報です。{% endif %}</p>
+{% endblock %}

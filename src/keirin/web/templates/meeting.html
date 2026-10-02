@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ meeting.venue_name }} {{ day }} | 競輪 補正得点{% endblock %}
+{% block content %}
+<h1>{{ meeting.venue_name }} <span class="badge">{{ meeting.grade }}</span> <span class="badge">{{ meeting.day_label }}</span></h1>
+<div class="nav">
+  <a href="/d/{{ day }}">← {{ day.month }}/{{ day.day }}（{{ weekday }}）の開催一覧</a>
+</div>
+{% if meeting.title %}<p class="muted">{{ meeting.title }}</p>{% endif %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>R</th><th>種目</th><th>発走</th><th>出走</th></tr></thead>
+  <tbody>
+  {% for r in races %}
+  <tr>
+    <td><a href="/d/{{ day }}/{{ meeting.venue_code }}/{{ r.race_no }}">{{ r.race_no }}R</a></td>
+    <td>{{ r.race_class }}</td>
+    <td>{{ r.start_time }}</td>
+    <td>{% for car, name, style in r.riders %}<span class="car car-{{ car }}">{{ car }}</span> {{ name }}{% if not loop.last %}　{% endif %}{% endfor %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
