@@ -54,6 +54,17 @@ def test_live_day_meeting_and_race(tmp_path, live_client):
     assert "+3.80" in page.text
 
 
+def test_upcoming_race_token_comes_from_the_meeting_header(tmp_path):
+    client = FakeClient()  # no JSJ014 response: it fails for days not started yet
+    client.responses[("JSJ001", MEETING_ENC)]["C0201data"]["C0201race"] = [
+        {"encParaR": race_enc(1)}
+    ]
+    page = TestClient(create_app(tmp_path, client)).get(f"/d/{DAY}/99/1")
+    assert page.status_code == 200
+    assert "山田 一郎" in page.text
+    assert ("JSJ014", {"encp": MEETING_ENC}) not in client.calls
+
+
 def test_collected_day_is_served_from_tables(tmp_path):
     bundle = fetch_day(FakeClient(), date.fromisoformat(DAY))
     storage.write_tables(tmp_path, date.fromisoformat(DAY), parse_bundle(bundle))

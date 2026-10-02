@@ -177,6 +177,12 @@ class Store:
         return card_entries(self._live("JSJ006", encp=token), summary)
 
     def _race_token(self, meeting: Row, race_no: int) -> str:
+        # The meeting header lists the race tokens in race order, also for upcoming days
+        # (JSJ014 answers resultCd=-1 for days that have not started yet).
+        header = self._live("JSJ001", encp=meeting["enc"]).get("C0201data") or {}
+        races = header.get("C0201race") or []
+        if 0 < race_no <= len(races) and races[race_no - 1].get("encParaR"):
+            return races[race_no - 1]["encParaR"]
         label = f"{race_no}R"
         for day in self._live("JSJ014", encp=meeting["enc"]).get("raceDayDataList") or []:
             if day.get("strRaceNitiji") != meeting["day_label"]:
