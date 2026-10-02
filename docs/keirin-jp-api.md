@@ -17,7 +17,7 @@
 | type | パラメータ | 元の画面 | 内容 |
 |---|---|---|---|
 | `JSJ057` | `kday=YYYYMMDD` | トップ（開催情報） | その日の開催一覧 `kInfo[]`: `jyoName` 場名、`KeirinCd` 場コード、`gradeIconChar` グレード、`nitijiIconChar` 初日/2日目/最終日、`kaisaiIconChar` 開催区分、`encPrm` 開催トークン |
-| `JSJ001` | `encp=<開催>` | 共通ヘッダ | `C0201data.raceName` 開催タイトル、`joName` |
+| `JSJ001` | `encp=<開催>` | 共通ヘッダ | `C0201data.raceName` 開催タイトル、`joName`、`C0201race[]`（レース順の**レーストークン `encParaR`**。翌日分もある）、`C0201kaisai[]`（開催の各日の開催トークン） |
 | `JSJ017` | `encp=<開催>` | 出走表一覧 (PJ0305) | `kaisaihi`、`rInfo[]`: `raceNo`、`syumoku` 種目、`denTime` 締切、`stTime` 発走、`sInfo[]`（`syaban`、`senNo`、`senName`、`huken`、`kyaku`） |
 | `JSJ018` | `encp=<開催>` | 結果一覧 (PJ0306) | `kday`、`resultList[]`: `rclblRaceNo`、1〜3着、2車単/3連単の払戻、**`raceRVPrm` = レーストークン** |
 | `JSJ006` | `encp=<レース>` | 出走表 (PJ0315) | `sensyuTypeInfo[]`: 登録番号、級班、脚質、期別、年齢、`heikinTokuten` 競走得点、逃/捲/差/マーク回数、B/H/S回数、勝率、2連対率、3連対率、今場所と直近4場所の成績 |
@@ -39,7 +39,7 @@
 
 | type | 内容 |
 |---|---|
-| `JSJ014` | 開催のレース番号一覧とレーストークン。古い開催では `resultCd=-1` になるので使っていない |
+| `JSJ014` | 開催の全日程のレーストークン。古い開催や、まだ始まっていない日の開催トークンでは `resultCd=-1` になる（ビューアでは予備として使う） |
 | `JSJ015` | 開催の番組情報（ランキングなど） |
 | `JSJ016` | 場外の発売状況 |
 | `JSJ048` | 共通ヘッダ |
