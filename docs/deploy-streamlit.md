@@ -28,6 +28,7 @@
    - Advanced settings → Python version: **3.12**
    - **Deploy** を押す（初回は依存のインストールで数分かかる）。
 3. アプリ右上の **Share**（または Settings → Sharing）で、**Only specific people can view this app** を選び、自分のメールアドレスを招待する。
+   - **Public（This app is public and searchable）には絶対にしない**（データが誰でも見られて検索にも載る。私的使用の範囲を超える）。
    - Private リポジトリから動かすアプリは既定で Private になるが、念のため確認する。
 4. アプリの URL を開き、招待したメールアドレス（Google ログインか、メールのリンク）でログインする。
 
