@@ -1,0 +1,77 @@
+# Reusable workflow: collects race data into the CALLER's repository.
+#
+# It is meant to be called from the private data repository (see
+# infra/data-repo/), so that collected data and job logs never live in this
+# public repository. Commits are created through the GitHub API with the
+# caller's GITHUB_TOKEN and are therefore signed ("Verified") by GitHub.
+name: collect
+
+on:
+  workflow_call:
+    inputs:
+      date:
+        description: First day to collect (YYYY-MM-DD). Empty = the last 3 days (JST), skipping days already collected.
+        type: string
+        default: ""
+      to:
+        description: Last day to collect (inclusive). Empty = same as date.
+        type: string
+        default: ""
+      code_ref:
+        description: Ref of keirin-platform to run.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout data repository (caller)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: data
+          persist-credentials: false
+
+      - name: Checkout keirin-platform
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: keirin-platform/keirin-platform
+          ref: ${{ inputs.code_ref }}
+          path: code
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Collect
+        id: collect
+        working-directory: code
+        env:
+          DATE: ${{ inputs.date }}
+          TO: ${{ inputs.to }}
+        run: |
+          if [ -z "$DATE" ]; then
+            DATE=$(TZ=Asia/Tokyo date -d '3 days ago' +%F)
+            TO=$(TZ=Asia/Tokyo date -d 'yesterday' +%F)
+          fi
+          TO=${TO:-$DATE}
+          echo "range=$DATE..$TO" >> "$GITHUB_OUTPUT"
+          uv run --locked --no-dev keirin collect --data-dir ../data --date "$DATE" --to "$TO"
+
+      # Runs even if collection failed part-way, so days already fetched are kept.
+      - name: Commit (signed by GitHub)
+        if: ${{ !cancelled() && steps.collect.outputs.range != '' }}
+        working-directory: code
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          RANGE: ${{ steps.collect.outputs.range }}
+        run: |
+          uv run --locked --no-dev keirin github-commit --repo-dir ../data \
+            --repo "$REPO" --branch "$BRANCH" --message "chore(data): collect $RANGE"

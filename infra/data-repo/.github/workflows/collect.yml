@@ -1,0 +1,35 @@
+# Caller workflow for the private data repository (keirin-platform/keirin-data).
+# The logic lives in keirin-platform's reusable workflow; keep this file thin.
+name: collect
+
+on:
+  schedule:
+    - cron: "30 18 * * *" # 03:30 JST, after midnight races are settled
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "First day (YYYY-MM-DD). Empty = last 3 days (JST)"
+        required: false
+        default: ""
+      to:
+        description: "Last day (inclusive). Empty = same as date"
+        required: false
+        default: ""
+      code_ref:
+        description: "keirin-platform ref to run"
+        required: false
+        default: main
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    permissions:
+      contents: write
+    uses: keirin-platform/keirin-platform/.github/workflows/collect.yml@main
+    with:
+      date: ${{ inputs.date || '' }}
+      to: ${{ inputs.to || '' }}
+      code_ref: ${{ inputs.code_ref || 'main' }}
