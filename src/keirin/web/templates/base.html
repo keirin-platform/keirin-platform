@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{% block title %}競輪 補正得点{% endblock %}</title>
+<style>
+:root {
+  --bg: #f7f7f5; --surface: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
+  --accent: #2557a7; --up: #1f7a3d; --up-bg: #e5f4ea; --down: #b3261e; --down-bg: #fbe9e7;
+  --warn: #8a6d00;
+  --car1: #ffffff; --car2: #222222; --car3: #e33b3b; --car4: #2f6fde; --car5: #f2cf2c;
+  --car6: #2e9e4f; --car7: #f08a24; --car8: #e66fb2; --car9: #7b3fc4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --surface: #1f1f1d; --text: #ecebe6; --muted: #a09f98; --line: #34332f;
+    --accent: #8fb3f2; --up: #7fd39a; --up-bg: #1d3325; --down: #f2a29a; --down-bg: #3a2220;
+    --warn: #e6c65c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header, main, footer { max-width: 1080px; margin: 0 auto; padding: 12px 16px; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+header .brand { font-weight: 700; color: var(--text); }
+h1 { font-size: 1.25rem; margin: 4px 0 12px; }
+.muted { color: var(--muted); font-size: .85rem; }
+.nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 16px; }
+.nav a, .nav span { padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); }
+.nav .current { font-weight: 700; border-color: var(--accent); }
+.cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px 14px; }
+.card .name { font-weight: 700; font-size: 1.05rem; }
+.badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: .8rem;
+  border: 1px solid var(--line); margin-right: 4px; }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  text-align: left; }
+th { font-size: .8rem; color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; }
+tr:last-child td { border-bottom: none; }
+tr.up td.adj { color: var(--up); font-weight: 700; }
+tr.down td.adj { color: var(--down); font-weight: 700; }
+tr.up td.corr { background: var(--up-bg); }
+tr.down td.corr { background: var(--down-bg); }
+td.corr { font-weight: 700; }
+.car { display: inline-block; width: 1.7em; text-align: center; border-radius: 4px;
+  font-weight: 700; border: 1px solid var(--line); }
+.car-1 { background: var(--car1); color: #222; } .car-2 { background: var(--car2); color: #fff; }
+.car-3 { background: var(--car3); color: #fff; } .car-4 { background: var(--car4); color: #fff; }
+.car-5 { background: var(--car5); color: #222; } .car-6 { background: var(--car6); color: #fff; }
+.car-7 { background: var(--car7); color: #222; } .car-8 { background: var(--car8); color: #222; }
+.car-9 { background: var(--car9); color: #fff; }
+.note { background: var(--surface); border-left: 3px solid var(--accent); padding: 8px 12px;
+  margin: 16px 0; font-size: .9rem; }
+.warn { color: var(--warn); }
+footer { color: var(--muted); font-size: .8rem; }
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">競輪 補正得点</a>
+  <span class="muted">データ: {{ last_collected or "未収集" }} まで収集済み</span>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>
+  データ出典: KEIRIN.JP（個人利用）。補正得点は推定値です。
+</footer>
+</body>
+</html>

@@ -169,6 +169,15 @@ def parse_bundle(bundle: dict[str, Any]) -> dict[str, list[Row]]:
     return tables
 
 
+def card_entries(card: dict[str, Any], summary: dict[str, Any] | None = None) -> list[Row]:
+    """Entries of one race card (JSJ006), e.g. of an upcoming race fetched live.
+
+    `summary` is the race's item of the meeting entry list (JSJ017 rInfo), used as a
+    fallback for riders missing from the card.
+    """
+    return _entries({}, summary or {}, card, {})
+
+
 def _entries(race_base: Row, summary: dict, card: dict, result: dict) -> list[Row]:
     rows: dict[int, Row] = {}
     for s in card.get("sensyuTypeInfo") or []:
