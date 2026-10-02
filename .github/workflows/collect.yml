@@ -11,8 +11,8 @@ on:
     inputs:
       date:
         description: >-
-          First day to collect (YYYY-MM-DD). Empty = rolling window of the last 4 months
-          (JST), fetching at most max_days missing days per run (default 10).
+          First day to collect (YYYY-MM-DD). Empty = rolling window from the 1st of the month
+          4 months ago (JST), fetching at most max_days missing days per run (default 10).
         type: string
         default: ""
       to:
@@ -63,8 +63,10 @@ jobs:
           MAX_DAYS: ${{ inputs.max_days }}
         run: |
           if [ -z "$DATE" ]; then
-            # Keep the last 4 months complete; a backfill is spread over several daily runs.
-            DATE=$(TZ=Asia/Tokyo date -d '4 months ago' +%F)
+            # Keep everything since the 1st of the month 4 months ago (the score window is the
+            # current month + 3 previous; one more month allows evaluating last month's cards).
+            # A backfill is spread over several daily runs by MAX_DAYS.
+            DATE=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -4 months" +%F)
             TO=$(TZ=Asia/Tokyo date -d 'yesterday' +%F)
             MAX_DAYS=${MAX_DAYS:-10}
           fi
