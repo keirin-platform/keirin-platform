@@ -1,0 +1,104 @@
+# CLAUDE.md
+
+個人利用向けの競輪データシステム。Vibe Coding で開発していて、設計と実装は Claude に任されている。
+オーナーは欲しい機能だけを伝える。このファイルには、決めたことと経緯をすべて記録する。
+
+## 開発ルール（オーナー指定）
+
+- **言語**: PHP 以外なら何でもよい → **Python** を採用（理由は「決定ログ」を参照）。
+- **PR 形式**で進める。`main` へ直接コミットしない（初期コミットだけは例外）。ブランチ名は `feat/...`、`fix/...`、`docs/...`、`chore/...`。
+- **GPG 署名は必須**。`git commit -S`（`commit.gpgsign=true` が設定済み）。
+  - コミット前にキャッシュを確認する:
+    `echo test | gpg --batch --pinentry-mode error --local-user "$(git config user.signingkey)" --clearsign >/dev/null`
+  - 失敗したら（キャッシュ切れ）、**オーナーにパスフレーズの入力を依頼する**（例: `! echo test | gpg --clearsign >/dev/null` を実行してもらう）。
+  - それ以外は、確認を取らずにコミットと push まで進めてよい。
+- **コミットメッセージ**: Conventional Commits 形式の英語（例: `feat(collector): add race result parser`）。
+- 有料化や広告掲載はしない（その点の規約確認は不要）。
+- PR のマージ: **オーナーに確認中**（決まったらここを更新する）。
+- 決めたこと、調査結果、仕様の変更はこのファイルに追記する。
+
+## 構成
+
+```
+keirin-platform/keirin-platform (Public)   ← このリポジトリ。コードだけを置く
+  └─ .github/workflows/collect.yml          再利用可能ワークフロー（収集ロジック本体）
+keirin-platform/keirin-data (Private)      ← 収集データの置き場
+  └─ .github/workflows/collect.yml          上を呼ぶだけの薄い caller（cron は毎日 03:30 JST）
+Render (予定)                               ← 閲覧用 Web。常時起動はしない（Free プランはスリープする）
+```
+
+- **データは Public リポジトリに置かない**。KEIRIN.JP のサイトポリシーで、複製は「私的使用」の範囲までしか認められていないため。
+  - `.gitignore` で `data/`、`raw/`、`tables/`、`*.json.gz` を除外している。
+  - テストのフィクスチャは**架空のデータ**で作る（実データをコピーしない）。
+  - 収集ジョブは Private 側で動かす。Public リポジトリの Actions ログは誰でも見られるため。
+- 収集は、データリポジトリの cron から、このリポジトリの再利用可能ワークフローを呼んで動かす。
+  - データのコミットは GraphQL `createCommitOnBranch` に GITHUB_TOKEN を使って作る。GitHub が署名するので Verified になる（CI に GPG 鍵は置かない）。
+  - データリポジトリ側のファイルの雛形は `infra/data-repo/` にある。変更したらデータリポジトリにも反映する。
+- 実測（2026-10-01 分）: 9開催・82レースで 192 リクエスト、約3分。サイズは raw 190KB + CSV 100KB/日（年に約 105MB）。リポジトリが大きくなりすぎたら、raw の扱い（別ブランチや Release への退避）を見直す。
+- Actions の minutes: Private（Free プラン）は月 2,000 分。毎日の収集は1回あたり数分。過去分の一括取得（backfill）は minutes を大きく使うので、ローカルで実行して push するのが基本。
+
+## データソース
+
+- KEIRIN.JP の内部 JSON API（`https://keirin.jp/pc/json?type=...`）。詳細は [docs/keirin-jp-api.md](docs/keirin-jp-api.md)。
+- 取得の流れ: `JSJ057`（日付 → 開催）→ `JSJ001` / `JSJ017` / `JSJ018`（開催）→ `JSJ006` / `JSJ012`（レース）。
+- **アクセスのマナー**（robots.txt で `/pc/json` が許可されていないため、オーナー了承のうえで控えめに収集する）:
+  - 間隔は1秒以上（`--min-interval`）、1件ずつ、1日1回。
+  - User-Agent でプロジェクトを名乗る。403 などはすぐ止め、失敗したらその回の収集を打ち切る。
+  - 取得済みの日は再取得しない（`--force` を付けない限り）。テーブルは raw から作り直す（`keirin rebuild`）。
+  - オッズの時系列収集のように頻度が上がるものは、追加する前に負荷をよく考える。
+
+## 技術スタック
+
+- Python 3.12、[uv](https://docs.astral.sh/uv/)、httpx。lint/format は ruff、テストは pytest。
+- データ形式: raw（gzip 圧縮した JSON）＋ 日別 CSV。スキーマは [docs/data-schema.md](docs/data-schema.md)。分析には DuckDB で CSV を直接読む想定。
+
+## コマンド
+
+```bash
+uv sync                                   # 依存のインストール
+uv run pytest -q                          # テスト
+uv run ruff check . && uv run ruff format --check .
+
+# 収集（デフォルトは昨日 JST。当日以降は結果が確定していないので拒否する）
+uv run keirin collect --data-dir ../keirin-data
+uv run keirin collect --date 2026-09-01 --to 2026-09-30 --data-dir ../keirin-data   # backfill
+uv run keirin rebuild --data-dir ../keirin-data      # raw からテーブルを作り直す
+uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
+  --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
+```
+
+## ディレクトリ
+
+```
+src/keirin/
+  client.py         KEIRIN.JP API クライアント（間隔制御、リトライ、UA）
+  collect.py        1日分を取ってきて raw bundle にまとめる
+  parse.py          raw bundle → テーブル（meetings / races / entries / payouts）
+  storage.py        raw と CSV のファイル配置、読み書き
+  github_commit.py  GitHub API で署名付きコミットを作る
+  cli.py            `keirin` コマンド
+tests/              pytest（conftest.py に架空の API レスポンスがある）
+docs/               API 調査メモ、データスキーマ
+infra/data-repo/    データリポジトリに置くファイルの雛形
+.github/workflows/  ci.yml（PR / main）、collect.yml（再利用可能な収集ワークフロー）
+```
+
+## 決定ログ
+
+- 2026-10-02 データソースを KEIRIN.JP の内部 JSON API に決定（認証不要、2015年まで遡れる）。
+- 2026-10-02 サイトポリシーを確認。私的利用は可、金銭的対価を得ることは禁止、複製は私的使用と引用の範囲まで。
+- 2026-10-02 robots.txt で `/pc/json` が許可されていない件をオーナーに相談 → 「控えめな頻度で収集する」に決定。
+- 2026-10-02 オーナーの判断で「コードは Public、データは別の Private リポジトリ（keirin-data）」に決定。
+- 2026-10-02 言語に Python を採用。データの収集と分析のエコシステムが充実していて、Render でも動かしやすいため。
+- 2026-10-02 データ形式は raw（gzip 圧縮した JSON）＋ 日別 CSV に決定。git の差分にやさしく、DuckDB でそのまま読める。SQLite は、バイナリを毎日コミットするとリポジトリが肥大化するので見送った。
+- 2026-10-02 収集ジョブはデータリポジトリから再利用可能ワークフローを呼ぶ方式にした。Secret が不要で、ログが Private 側に残り、コミットが Verified になるため。
+
+## 現状と TODO
+
+- [x] API 調査、規約確認
+- [x] 収集基盤（collect / rebuild / github-commit、CI、再利用可能ワークフロー）
+- [ ] keirin-data リポジトリの作成と、caller ワークフローの設置
+- [ ] GitHub Actions（海外の IP）から keirin.jp に届くかを確認する
+- [ ] 過去データの backfill（期間はオーナーと相談）
+- [ ] 閲覧用 Web（Render）。データリポジトリから読む方法を決める（読み取り専用の deploy key を使い、build 時に clone する案）
+- [ ] オーナーから機能の要望を受けたら、ここに追記する
