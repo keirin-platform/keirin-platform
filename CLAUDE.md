@@ -127,6 +127,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
   FastAPI 版と Render 設定は削除した（git の履歴には残っている）。
   - アプリはデータリポジトリから動かす（秘密情報は不要。組織の設定で deploy key は無効）。データのコミットごとに最新になる。
   - **ビューアのコードを変えたら、データリポジトリの `requirements.txt` の SHA を更新する PR も出す**。requirements.txt が変わらないと再インストールされないため。
+  - URL: https://keirin.streamlit.app/（Private）。Community Cloud は deploy key で clone するので、組織で deploy key を有効にする必要がある（2026-10-03、オーナーが設定）。
+  - ビューアは keirin.jp を1件ずつ取りに行き、タイムアウトは短め（8秒、2回まで）。失敗したら画面にエラーを出す。API 呼び出しと所要時間は Community Cloud のログ（Manage app）に出る。
   - 未収集の日の出走表は表示するときに keirin.jp から取得する（5分キャッシュ、1件ずつ）。
   Δ はまず遠山競輪研究所030の値を暫定で使い、10月下旬に自分たちのデータで推定し直す。
 
