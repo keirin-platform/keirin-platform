@@ -1,18 +1,20 @@
-"""Command line entry point: ``keirin collect | rebuild | github-commit``."""
+"""Command line entry point: ``keirin <command>`` (see ``keirin --help``)."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import os
 import sys
 from datetime import date
 from pathlib import Path
 
-from keirin import github_commit, storage
+from keirin import analysis, github_commit, storage
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
+from keirin.score import History, window_start
 from keirin.timeutil import date_range, today_jst, yesterday_jst
 
 log = logging.getLogger("keirin")
@@ -80,6 +82,43 @@ def cmd_github_commit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_corrections(args: argparse.Namespace) -> int:
+    history = History.from_tables(args.data_dir, since=window_start(args.date))
+    rows = analysis.corrected_card_rows(args.data_dir, args.date, history)
+    if args.changed_only:
+        rows = [r for r in rows if r["adjustment"]]
+    writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0]) if rows else ["date"])
+    writer.writeheader()
+    writer.writerows(rows)
+    return 0
+
+
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    history = History.from_tables(args.data_dir, since=window_start(args.date))
+    result = analysis.evaluate(args.data_dir, args.date, args.to, history)
+    for group, scores in result.items():
+        official, corrected = scores["official"], scores["corrected"]
+        print(
+            f"{group:9s} pairs={official.pairs:8.0f} "
+            f"official={official.rate:.4f} corrected={corrected.rate:.4f} "
+            f"diff={corrected.rate - official.rate:+.4f}"
+        )
+    return 0
+
+
+def cmd_estimate_deltas(args: argparse.Namespace) -> int:
+    estimates = analysis.estimate_deltas(args.data_dir, args.boundary, args.min_races)
+    if not estimates:
+        log.error("not enough data around %s", args.boundary)
+        return 1
+    for e in estimates:
+        print(
+            f"{e.from_tier:>3s} -> {e.to_tier:<3s} delta={e.delta:+6.2f} "
+            f"(stderr {e.stderr:.2f}, movers={e.movers}, stayers={e.stayers})"
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="keirin", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -112,6 +151,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--branch", required=True)
     p.add_argument("--message", required=True)
     p.set_defaults(func=cmd_github_commit)
+
+    p = sub.add_parser("corrections", help="print the day's race cards with corrected scores (CSV)")
+    p.add_argument("--date", type=date.fromisoformat, required=True)
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.add_argument("--changed-only", action="store_true", help="only riders with a correction")
+    p.set_defaults(func=cmd_corrections)
+
+    p = sub.add_parser("evaluate", help="compare official vs corrected scores against results")
+    p.add_argument("--date", type=date.fromisoformat, required=True, help="first day")
+    p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("estimate-deltas", help="estimate tier deltas from a class change")
+    p.add_argument("--boundary", type=date.fromisoformat, required=True, help="e.g. 2026-07-01")
+    p.add_argument("--min-races", type=int, default=6)
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_estimate_deltas)
     return parser
 
 
