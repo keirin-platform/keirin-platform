@@ -54,3 +54,9 @@ def test_day_buttons_move_the_date(tmp_path, monkeypatch):
     assert at.session_state["day"] == date(2026, 1, 11)
     at.sidebar.button[1].click().run()  # 今日
     assert at.session_state["day"] == date(2026, 1, 10)
+
+
+def test_keirin_jp_failure_is_shown_instead_of_hanging(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEIRIN_TEST_FAIL", "1")
+    at = run_app(tmp_path, monkeypatch)
+    assert at.error and "KEIRIN.JP から取得できませんでした" in at.error[0].value

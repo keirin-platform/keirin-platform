@@ -44,7 +44,13 @@ class CachedClient:
             hit = self._cache.get(key)
             if hit and now - hit[0] < self._ttl:
                 return hit[1]
-            body = self._client.get(type_, **params)
+            started = time.monotonic()
+            try:
+                body = self._client.get(type_, **params)
+            except Exception as e:
+                log.warning("%s failed after %.1fs: %s", type_, time.monotonic() - started, e)
+                raise
+            log.info("%s fetched in %.1fs", type_, time.monotonic() - started)
             self._cache = {k: v for k, v in self._cache.items() if now - v[0] < self._ttl}
             self._cache[key] = (now, body)
             return body
