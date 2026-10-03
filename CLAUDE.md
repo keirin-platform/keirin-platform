@@ -172,6 +172,9 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
   - **公開範囲は「Who can view this app」で決まる。必ず「Only specific people can view this app」（Private）のままにする**。
     Public（public and searchable）にすると、収集データが誰でも見られて検索にも載り、サイトポリシーの「私的使用」の範囲を超える。
     閲覧できるのは、招待したメールアドレスと、keirin-data にアクセスできる GitHub ユーザーだけ。無料プランの Private アプリ枠は1つで、これが使っている。
+  - **Streamlit には専用アカウント `shimomobot` でログインする**（2026-10-03 に切り替え）。Streamlit の GitHub 連携は OAuth の `repo` 権限で、
+    ログインしたアカウントが触れるすべての Private リポジトリが対象になり、絞れない。そのため shimomobot を `keirin-data` だけの外部コラボレーター（admin。
+    デプロイと deploy key の登録に必要）にした。オーナーの個人アカウントからは、Streamlit の許可を取り消す。
   - URL: https://keirin.streamlit.app/（Private）。Community Cloud は deploy key で clone するので、組織で deploy key を有効にする必要がある（2026-10-03、オーナーが設定）。
   - 当日の結果は、開催ヘッダ（JSJ001 `C0201race[].rcvKekka == "1"`）でレースが終わったのを確認してから JSJ012 を取る（終わっていないレースにはアクセスしない）。
   - ビューアは keirin.jp を1件ずつ取りに行き、タイムアウトは短め（8秒、2回まで）。失敗したら画面にエラーを出す。API 呼び出しと所要時間は Community Cloud のログ（Manage app）に出る。
