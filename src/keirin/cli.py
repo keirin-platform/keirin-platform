@@ -10,7 +10,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from keirin import analysis, github_commit, rating, storage
+import httpx
+
+from keirin import analysis, github_commit, hatena, rating, storage
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
@@ -155,6 +157,26 @@ def cmd_estimate_deltas(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_blog_sync(args: argparse.Namespace) -> int:
+    env = {k: os.environ.get(k, "") for k in ("HATENA_ID", "HATENA_BLOG_DOMAIN", "HATENA_API_KEY")}
+    if not all(env.values()):
+        log.error("set HATENA_ID, HATENA_BLOG_DOMAIN and HATENA_API_KEY")
+        return 2
+    articles = hatena.changed_articles(args.repo_dir, args.base)
+    log.info("%d article(s) to sync (%s)", len(articles), args.mode)
+    blog = hatena.HatenaBlog(env["HATENA_ID"], env["HATENA_BLOG_DOMAIN"], env["HATENA_API_KEY"])
+    fotolife = hatena.Fotolife(env["HATENA_ID"], env["HATENA_API_KEY"])
+    failures = 0
+    for article_dir in articles:
+        try:
+            hatena.sync_article(hatena.Article.load(article_dir), blog, fotolife, args.mode)
+        except (hatena.ArticleError, httpx.HTTPError, RuntimeError) as e:
+            # Keep going: the state of the articles that did sync still gets committed.
+            log.error("%s: %s", article_dir.name, e)
+            failures += 1
+    return 1 if failures else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="keirin", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -220,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-races", type=int, default=6)
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_estimate_deltas)
+
+    p = sub.add_parser("blog-sync", help="push changed articles of keirin-blog to Hatena Blog")
+    p.add_argument("--repo-dir", type=Path, default=Path("."))
+    p.add_argument("--mode", choices=["preview", "publish"], required=True)
+    p.add_argument("--base", help="git revision to diff from (default: every article)")
+    p.set_defaults(func=cmd_blog_sync)
     return parser
 
 

@@ -1,0 +1,84 @@
+# Reusable workflow: syncs the CALLER's (keirin-blog) articles to Hatena Blog.
+#
+# pull_request -> mode=preview: unpublished articles are pushed as drafts with a preview URL.
+# push to main -> mode=publish: articles follow their front matter's `draft` flag.
+# The state files (articles/*/hatena.json) are committed back through the GitHub API,
+# so the commits are signed ("Verified"). See docs/blog.md.
+name: blog-sync
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: preview | publish
+        type: string
+        required: true
+      base:
+        description: Git revision to diff from (changed articles only).
+        type: string
+        default: ""
+      hatena_id:
+        type: string
+        required: true
+      blog_domain:
+        type: string
+        required: true
+      code_ref:
+        description: Ref of keirin-platform to run.
+        type: string
+        default: main
+    secrets:
+      HATENA_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout blog repository (caller)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: blog
+          ref: ${{ github.head_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout keirin-platform
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: keirin-platform/keirin-platform
+          ref: ${{ inputs.code_ref }}
+          path: code
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Sync with Hatena Blog
+        id: sync
+        working-directory: code
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE: ${{ inputs.base }}
+          HATENA_ID: ${{ inputs.hatena_id }}
+          HATENA_BLOG_DOMAIN: ${{ inputs.blog_domain }}
+          HATENA_API_KEY: ${{ secrets.HATENA_API_KEY }}
+        run: uv run --locked --no-dev keirin blog-sync --repo-dir ../blog --mode "$MODE" --base "$BASE"
+
+      # Runs even if one article failed, so the state of the others is kept.
+      - name: Commit state (signed by GitHub)
+        if: ${{ !cancelled() && (steps.sync.outcome == 'success' || steps.sync.outcome == 'failure') }}
+        working-directory: code
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          uv run --locked --no-dev keirin github-commit --repo-dir ../blog \
+            --repo "$REPO" --branch "$BRANCH" --message "chore(blog): sync state with Hatena Blog ($MODE)"

@@ -17,6 +17,7 @@
 - **PR のマージは Claude が行う**: CI が通ったら `gh pr merge <n> --merge --delete-branch --subject "<PRタイトル> (#<n>)"` でマージする。
   - merge commit 方式にして、オーナーの鍵で署名したコミットを main の履歴にそのまま残す（merge commit 自体は GitHub が署名する）。PR タイトルも Conventional Commits 形式で書く。
 - 決めたこと、調査結果、仕様の変更はこのファイルに追記する。
+- **組織（keirin-platform）のリポジトリ名には `keirin-` を付ける**（オーナー指定、2026-10-03）。例: keirin-platform、keirin-data、keirin-blog。
 
 ## オーナーの要望（機能）
 
@@ -40,10 +41,12 @@
        - 無料プランの広告収入ははてな側に入り、著者には入らない。
        - アフィリエイト（Amazon など）、有料記事、Pro の広告は使わない。
      - 予定の構成:
-       - Private リポジトリ `keirin-platform/blog`（テンプレート hatena/Hatena-Blog-Workflows-Boilerplate を元にする）。
-       - `blogsync.yaml` と、Secret の `OWNER_API_KEY`（はてなの API キー。オーナーが設定する）。
+       - Private リポジトリ **`keirin-platform/keirin-blog`**（2026-10-03 作成）。
+       - 同期は**自前**（`hatena.py`、`blog-sync.yml`）。仕組みは [docs/blog.md](docs/blog.md)。
+       - PR で下書き（プレビュー URL）、`draft = false` でマージすると公開。
        - グラフは分析スクリプトで生成する（集計値だけ）。
-     - 未決: 公式ワークフローは自動コミットを作り、それには GPG 署名が付かない。GitHub API で署名付きにするか、例外として認めるかをセットアップ時に相談する。
+     - 公式の hatenablog-workflows は使わない（オーナー判断）。自動コミットに署名が付かないうえ、Private リポジトリでは自動マージが動かないため。
+     - ブログ本体はオーナーがこれから作る。作ったら、keirin-blog に Variables の `HATENA_ID`、`HATENA_BLOG_DOMAIN` と Secret の `HATENA_API_KEY` を登録してもらう。
      - 必要なら、オーナーの既存の Zenn アカウントで、分析手法の技術記事を別に書く（内部 API の詳細は書かない）。
    - 分析のテーマ案:
      - 級班別の得点の分布、得点と着順の関係
@@ -61,6 +64,7 @@
 keirin-platform/keirin-platform (Public)   ← このリポジトリ。コードだけを置く
   └─ .github/workflows/collect.yml          再利用可能ワークフロー（収集ロジック本体）
 keirin-platform/keirin-data (Private)      ← 収集データの置き場
+keirin-platform/keirin-blog (Private)      ← はてなブログの記事（blog-sync.yml を呼ぶ caller。docs/blog.md）
   └─ .github/workflows/collect.yml          上を呼ぶだけの薄い caller（cron は毎日 03:30 JST）
                                              データのリポジトリもマージは Claude が行う
 Streamlit Community Cloud (無料)           ← 出走表ビューア。データリポジトリの streamlit_app.py を動かす
@@ -137,12 +141,14 @@ src/keirin/
   score.py          競走得点の昇降級補正（tier、Δ、窓、History）
   analysis.py       補正つき出走表、精度評価（公式、補正後、レーティング）、Δ の推定
   rating.py         相手の強さを考慮したレーティング（Plackett–Luce、時間減衰、得点換算）
+  hatena.py         keirin-blog の記事をはてなブログに同期（AtomPub、Fotolife、状態ファイル）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
   viewer.py         出走表ビューア（Streamlit）。「出走表」タブ（補正得点）と「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
 tests/              pytest（conftest.py に架空の API レスポンスがある）
 docs/               API 調査メモ、データスキーマ
 infra/data-repo/    データリポジトリに置くファイルの雛形
+infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイルの雛形
 .github/workflows/  ci.yml（PR / main）、collect.yml（再利用可能な収集ワークフロー）
 ```
 
@@ -159,7 +165,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - 2026-10-03 記事のために、収集範囲を 2025-12-01 からに広げた（オーナー判断）。ペースは変えない（1回あたり最大10日分）。
 - 2026-10-03 相手の強さの考慮は、単純補正ではなく、**レーティング（Plackett–Luce）**で行う（オーナー承認）。
   単純補正は、番組の平均点で反映済みの部分を二重に数えるため採らない。ビューアへの表示は、精度を確かめてから行う。
-- 2026-10-03 記事の公開先を、いったん Zenn に選定したあと、**はてなブログ**（公式の GitHub 連携ワークフロー）に変更した。
+- 2026-10-03 記事の公開先を、いったん Zenn に選定したあと、**はてなブログ**に変更した。
+- 2026-10-03 リポジトリ名に `keirin-` を付けるルールにした（オーナー指定）。ブログのリポジトリは keirin-blog。同期は公式ワークフローではなく自前にした（署名とブランチ保護の理由、オーナー判断）。
   理由は、読者層が競輪の内容に合うことと、オーナーの既存の Zenn 技術アカウントと分けられること。セットアップは記事を書く時期に行う。
 - 2026-10-02 backfill は直近4ヶ月（オーナー指定。競輪の予想では直近4ヶ月の成績がよく使われるため）。サイトの負荷を抑えるため、日次ジョブで1回あたり最大10日ずつ埋める。
 - 2026-10-02 得点の窓が「当月＋前3ヶ月」だとわかったので、収集範囲を「4ヶ月前の月初から」に変えた（10月なら6/1〜）。窓全体と、前の月の出走表の評価に必要な分を確保するため。
@@ -189,6 +196,8 @@ infra/data-repo/    データリポジトリに置くファイルの雛形
 - [x] GitHub Actions（海外の IP）から keirin.jp に届くことを確認（2026-10-02。ローカル実行と出力が完全に一致し、データのコミットは Verified）
 - [ ] backfill: 2025-12-01 から（2026-10-02 に開始。日次ジョブが自動で進め、11/5 ごろに完了する見込み）
 - [ ] 記事用の分析（backfill の完了後。テーマ案は「オーナーの要望」2. を参照）
+- [x] keirin-blog リポジトリと、はてなブログ同期（`hatena.py`、`blog-sync.yml`）
+- [ ] はてなブログの作成と、keirin-blog の Variables / Secret の登録（オーナー）。そのあと、テスト記事で下書きと公開の流れを確認する
 - [x] レーティングの計算と評価のコマンド（`rating.py`）
 - [ ] 2026-10-11 ごろ: レーティングの試作を評価する（級班をまたいでつながったか、半減期）
 - [ ] 2026-11 上旬: レーティングを本格的に評価する。公式の得点に勝てばビューアに表示する。改善の候補は docs/rating.md
