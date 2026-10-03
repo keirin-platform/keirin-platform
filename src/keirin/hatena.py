@@ -194,8 +194,25 @@ class HatenaBlog:
             resp = self._http.put(edit_url, content=payload, headers=headers)
         else:
             resp = self._http.post(self.collection, content=payload, headers=headers)
-        resp.raise_for_status()
+        _check(resp, "Hatena Blog")
         return _parse_entry(resp.content)
+
+
+class HatenaApiError(RuntimeError):
+    pass
+
+
+def _check(resp: httpx.Response, api: str) -> None:
+    """Raise with Hatena's explanation (the body) instead of a bare status code."""
+    if resp.is_success:
+        return
+    detail = re.sub(r"\s+", " ", resp.text).strip()[:300]
+    hint = resp.headers.get("WWW-Authenticate", "")
+    raise HatenaApiError(
+        f"{api}: HTTP {resp.status_code} {resp.reason_phrase}"
+        + (f" [{hint}]" if hint else "")
+        + (f": {detail}" if detail else "")
+    )
 
 
 def _parse_entry(xml: bytes) -> Entry:
@@ -248,7 +265,7 @@ class Fotolife:
             content=ET.tostring(entry, encoding="utf-8", xml_declaration=True),
             headers={"X-WSSE": self.wsse(), "Content-Type": "application/xml"},
         )
-        resp.raise_for_status()
+        _check(resp, "Fotolife")
         syntax = ET.fromstring(resp.content).findtext(f"{{{HATENA}}}syntax")
         if not syntax:
             raise RuntimeError(f"Fotolife returned no syntax for {path.name}")
