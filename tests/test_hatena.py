@@ -213,3 +213,17 @@ def test_changed_articles(tmp_path):
     assert hatena.changed_articles(tmp_path, None) == [a, b]  # templates are skipped
     assert hatena.changed_articles(tmp_path, "0" * 40) == [a, b]
     assert hatena.changed_articles(tmp_path, "no-such-rev") == [a, b]
+
+
+def test_api_errors_include_hatenas_explanation(tmp_path):
+    def handler(request):
+        return httpx.Response(403, text="<error>Forbidden: invalid credentials</error>")
+
+    d = write_article(tmp_path)
+    transport = httpx.MockTransport(handler)
+    blog = HatenaBlog("me", "example.hatenablog.com", "key", transport=transport)
+    fotolife = Fotolife("me", "key", transport=transport)
+    with pytest.raises(
+        hatena.HatenaApiError, match="Fotolife: HTTP 403 Forbidden.*invalid credentials"
+    ):
+        sync_article(Article.load(d), blog, fotolife, "preview")
