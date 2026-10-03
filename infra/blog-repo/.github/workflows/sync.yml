@@ -1,0 +1,32 @@
+# Caller workflow for the private blog repository (keirin-platform/keirin-blog).
+# The logic lives in keirin-platform's reusable workflow; keep this file thin.
+#   pull request  -> unpublished articles are pushed to Hatena Blog as drafts (preview URL)
+#   merge to main -> articles follow their front matter's `draft` flag (false = publish)
+name: sync
+
+on:
+  pull_request:
+    paths: ["articles/**"]
+  push:
+    branches: [main]
+    paths: ["articles/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: hatena-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Skip until the blog is set up (repository variables HATENA_ID / HATENA_BLOG_DOMAIN).
+    if: ${{ vars.HATENA_BLOG_DOMAIN != '' && vars.HATENA_ID != '' }}
+    permissions:
+      contents: write
+    uses: keirin-platform/keirin-platform/.github/workflows/blog-sync.yml@main
+    with:
+      mode: ${{ github.event_name == 'pull_request' && 'preview' || 'publish' }}
+      base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || '' }}
+      hatena_id: ${{ vars.HATENA_ID }}
+      blog_domain: ${{ vars.HATENA_BLOG_DOMAIN }}
+    secrets:
+      HATENA_API_KEY: ${{ secrets.HATENA_API_KEY }}
