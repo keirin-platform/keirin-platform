@@ -162,7 +162,9 @@ src/keirin/
   lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
-  viewer.py         出走表ビューア（Streamlit）。「出走表」タブ（補正得点）と「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
+  viewer.py         出走表ビューア（Streamlit）。並びの図（車番の色、ラインごと、競りは縦に重ねる）、
+                    「出走表」タブ（補正得点、ライン、位置＝先頭／番手／単騎、競り）、「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
+                    並びは、当日は keirin.jp の最新の nInfo、なければ収集済みの raw/lines を使う
 tests/              pytest（conftest.py に架空の API レスポンスがある）
 docs/               API 調査メモ、データスキーマ
 infra/data-repo/    データリポジトリに置くファイルの雛形

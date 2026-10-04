@@ -13,6 +13,17 @@ from keirin.viewer import render
 client = FakeClient()
 client.responses[("JSJ001", MEETING_ENC)]["C0201data"]["C0201race"] = [{"encParaR": race_enc(1)}]
 client.responses[("JSJ006", race_enc(1))]["sensyuTypeInfo"][0]["kyuhan"] = "S2"
+if os.environ.get("KEIRIN_TEST_NINFO"):
+    client.responses[("JSJ017", MEETING_ENC)]["rInfo"][0].update(
+        {
+            "nInfo": [
+                {"syaban": 1, "narabiX": 3, "narabiY": 1},
+                {"syaban": 2, "narabiX": 1, "narabiY": 1},
+                {"syaban": 3, "narabiX": 3, "narabiY": 2},
+            ],
+            "line": "細切れ",
+        }
+    )
 if os.environ.get("KEIRIN_TEST_FINISHED"):
     client.responses[("JSJ001", MEETING_ENC)]["C0201data"]["C0201race"][0]["rcvKekka"] = "1"
 if os.environ.get("KEIRIN_TEST_FAIL"):

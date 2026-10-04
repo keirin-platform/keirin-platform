@@ -115,3 +115,38 @@ def test_live_result_only_after_the_race(tmp_path, live_client):
     result = Store(tmp_path, live_client).result(D, "99", 1)
     assert [e["car_no"] for e in result["entries"] if e["finish_pos"] == 1] == [2]
     assert len(result["payouts"]) == 3
+
+
+NINFO_CONTEST = [
+    {"syaban": 1, "narabiX": 3, "narabiY": 1},
+    {"syaban": 2, "narabiX": 1, "narabiY": 1},
+    {"syaban": 3, "narabiX": 3, "narabiY": 2},
+]
+
+
+def test_formation_live_from_keirin_jp(tmp_path, live_client):
+    live_client.responses[("JSJ017", MEETING_ENC)]["rInfo"][0].update(
+        {"nInfo": NINFO_CONTEST, "line": "細切れ"}
+    )
+    f = Store(tmp_path, live_client).formation(D, "99", 1)
+    assert (f["text"], f["label"], f["source"]) == ("2 / (13)", "細切れ", "keirin.jp")
+    assert f["lines"] == [[[2]], [[1, 3]]]
+    assert f["by_car"][1] == {"line_no": 2, "line_pos": 1, "line_size": 2, "contested": True}
+
+
+def test_formation_falls_back_to_the_capture(tmp_path, live_client):
+    # keirin.jp no longer shows it (race over): use what the collector captured earlier.
+    from keirin import lines
+
+    block = (
+        '<ul class="keirinRyosouline"><li><span class="no2">2</span></li>'
+        '<li><span class="no1">1</span></li><li><span class="no0">&nbsp;</span></li>'
+        '<li><span class="no3">3</span></li></ul>'
+    )
+    lines.save_captures(tmp_path, D, {"99-1": {"source": "oddspark", "data": block}})
+    f = Store(tmp_path, live_client).formation(D, "99", 1)
+    assert (f["text"], f["label"], f["source"]) == ("21 / 3", "二分戦", "oddspark")
+
+
+def test_formation_unknown(tmp_path, live_client):
+    assert Store(tmp_path, live_client).formation(D, "99", 1) is None

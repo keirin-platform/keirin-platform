@@ -74,3 +74,26 @@ def test_result_tab(tmp_path, monkeypatch):
     payouts = at.dataframe[2].value
     assert list(payouts["払戻金"]) == ["1,230円", "150円", "320円"]
     assert any("天候 晴" in m.value for m in at.markdown)
+
+
+def test_position_label():
+    from keirin.viewer import position_label
+
+    def info(pos, size, contested=False):
+        return {"line_no": 1, "line_pos": pos, "line_size": size, "contested": contested}
+
+    assert position_label(info(1, 3)) == "先頭"
+    assert position_label(info(2, 3, True)) == "番手（競り）"
+    assert position_label(info(4, 4)) == "4番手"
+    assert position_label(info(1, 1)) == "単騎"
+    assert position_label(None) == ""
+
+
+def test_formation_is_shown(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEIRIN_TEST_NINFO", "1")
+    at = run_app(tmp_path, monkeypatch)
+    assert any("並び: 2 / (13)（細切れ）" in c.value for c in at.caption)
+    assert any("競り" in m.value for m in at.markdown)  # stacked badges of the contest
+    frame = at.dataframe[0].value
+    # "2 / (13)": car 2 alone, cars 1 and 3 contest the head of the other line.
+    assert list(frame.sort_values("車")["位置"]) == ["先頭（競り）", "単騎", "先頭（競り）"]
