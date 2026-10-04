@@ -18,6 +18,7 @@
   - merge commit 方式にして、オーナーの鍵で署名したコミットを main の履歴にそのまま残す（merge commit 自体は GitHub が署名する）。PR タイトルも Conventional Commits 形式で書く。
 - 決めたこと、調査結果、仕様の変更はこのファイルに追記する。
 - **組織（keirin-platform）のリポジトリ名には `keirin-` を付ける**（オーナー指定、2026-10-03）。例: keirin-platform、keirin-data、keirin-blog。
+  - 例外: `.github`（組織のプロフィール `profile/README.md` 用。GitHub が決めた名前）。
 
 ## オーナーの要望（機能）
 
@@ -70,6 +71,8 @@ keirin-platform/keirin-platform (Public)   ← このリポジトリ。コード
   └─ .github/workflows/collect.yml          再利用可能ワークフロー（収集ロジック本体）
 keirin-platform/keirin-data (Private)      ← 収集データの置き場
 keirin-platform/keirin-blog (Private)      ← はてなブログの記事（blog-sync.yml を呼ぶ caller。docs/blog.md）
+keirin-platform/.github (Public)           ← 組織のプロフィール（profile/README.md）。公開してよい内容だけを書く
+                                             （Private リポジトリ、ビューアの URL、内部 API の詳細には触れない）
   └─ .github/workflows/collect.yml          上を呼ぶだけの薄い caller（cron は毎日 03:30 JST）
                                              データのリポジトリもマージは Claude が行う
 Streamlit Community Cloud (無料)           ← 出走表ビューア。データリポジトリの streamlit_app.py を動かす
