@@ -60,6 +60,6 @@ jobs:
       since: ${{ inputs.since || '2025-12-01' }}
       lines_only: ${{ github.event.schedule == '0 7 * * *' || inputs.lines_only == true }}
       discord_test: ${{ inputs.discord_test == true }}
+      code_ref: ${{ inputs.code_ref || 'main' }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      code_ref: ${{ inputs.code_ref || 'main' }}
