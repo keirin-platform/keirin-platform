@@ -64,6 +64,9 @@
 5. **GitHub 上の競輪関連リポジトリの調査**（2026-10-04）→ [docs/github-keirin-repos.md](docs/github-keirin-repos.md)。
    私たちに最も近いのは Tower2007/keirin-ai（keirin.jp から蓄積、LightGBM、shadow 評価）。どのリポジトリもライセンスがないので、コードは流用しない。
 
+6. **選手の特徴（クセ）を見つける分析**（2026-10-05）。例: 決勝でもないのに番手捲りをよくする選手、先行ラインの番手で、ラインが捲られたときに共倒れしやすい選手。
+   並びと結果（決まり手、B・H）から検出して、経験ベイズで少ない件数を補正する。計画は [docs/rider-traits.md](docs/rider-traits.md)。
+
 ## 構成
 
 ```
@@ -226,6 +229,7 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [x] ライン（並び）の収集（2026-10-05）。これから先の分は keirin.jp（当日・翌日の JSJ017 の nInfo、毎回と 16:00）、過去分と取りこぼしはオッズパーク（10秒間隔、1回50分まで）。docs/lines.md
 - [ ] オッズパークの並びの backfill（メインの backfill が終わる 10/24 ごろに自動で始まり、2027-01 中旬〜下旬にそろう見込み）
 - [ ] 検討: オッズの収集（必要になったら相談する）
+- [ ] 選手の特徴の検出コード（番手捲り率、共倒れ率、経験ベイズ）。並びがたまってきたら試す。本格的な分析は 2027-02 ごろ（docs/rider-traits.md）
 - [x] 改善: 出走表をレースごとの `JSJ006` から、開催ごとの `JSJ002` に切り替えた（2026-10-04。10/01 分で 192 → 119 リクエスト、表は完全に一致。ビューアの当日分も JSJ002）
 - [x] keirin-blog リポジトリと、はてなブログ同期（`hatena.py`、`blog-sync.yml`）
 - [x] はてなブログ（keirin-platform.hatenablog.com、はてな ID: keirin-platform）の作成と、keirin-blog の Variables / Secret の登録（オーナー、2026-10-03）
