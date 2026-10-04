@@ -8,8 +8,12 @@ response, so we never have to construct them.
       JSJ001 encp=<meeting>  meeting header (title)
       JSJ017 encp=<meeting>  entry list of every race (start times, classes)
       JSJ018 encp=<meeting>  result list (per-race encp in raceRVPrm)
-        JSJ006 encp=<race>  detailed race card (scores, styles, win rates)
+      JSJ002 encp=<race>     detailed cards of EVERY race of the meeting (scores, styles,
+                             win rates) in one request; JSJ006 per race is the fallback
         JSJ012 encp=<race>  detailed result (order, margins, payouts, weather)
+
+Bundles collected before 2026-10-04 have one JSJ006 per race instead of JSJ002;
+the parser reads both.
 
 The bundle stores the raw responses untouched so that tables can be rebuilt
 later (``keirin rebuild``) without hitting the site again.
@@ -50,11 +54,17 @@ def fetch_day(client: ApiClient, day: date) -> dict[str, Any]:
         call("JSJ001", encp=enc)
         call("JSJ017", encp=enc)
         result_list = call("JSJ018", encp=enc)
-        for race in result_list.get("resultList") or []:
-            race_enc = race.get("raceRVPrm") or race.get("raceTanpyoPrm")
-            if not race_enc:
-                continue
-            call("JSJ006", encp=race_enc)
+        race_encs = [
+            race.get("raceRVPrm") or race.get("raceTanpyoPrm")
+            for race in result_list.get("resultList") or []
+        ]
+        race_encs = [e for e in race_encs if e]
+        if not race_encs:
+            continue
+        cards = call("JSJ002", encp=race_encs[0])
+        for race_enc in race_encs:
+            if not cards.get("raceInfo"):
+                call("JSJ006", encp=race_enc)
             call("JSJ012", encp=race_enc)
             race_count += 1
     log.info(

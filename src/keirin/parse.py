@@ -139,11 +139,12 @@ def parse_bundle(bundle: dict[str, Any]) -> dict[str, list[Row]]:
         results_by_race = {
             _race_no(r.get("rclblRaceNo")): r for r in result_list.get("resultList") or []
         }
+        meeting_cards = _meeting_cards(index, results_by_race.values())
         for race_no in sorted((set(cards_by_race) | set(results_by_race)) - {None}):
             summary = cards_by_race.get(race_no) or {}
             result_row = results_by_race.get(race_no) or {}
             race_enc = result_row.get("raceRVPrm") or result_row.get("raceTanpyoPrm") or ""
-            card = index.get(("JSJ006", race_enc)) or {}
+            card = meeting_cards.get(race_no) or index.get(("JSJ006", race_enc)) or {}
             result = index.get(("JSJ012", race_enc)) or {}
             race_base = {**base, "race_no": race_no}
 
@@ -169,8 +170,26 @@ def parse_bundle(bundle: dict[str, Any]) -> dict[str, list[Row]]:
     return tables
 
 
+def _meeting_cards(index: dict[tuple[str, str], dict[str, Any]], result_rows) -> dict:
+    """Race cards of a meeting from its JSJ002 response (keyed by race number)."""
+    for row in result_rows:
+        body = index.get(("JSJ002", row.get("raceRVPrm") or row.get("raceTanpyoPrm") or ""))
+        if body and body.get("raceInfo"):
+            return meeting_race_cards(body)
+    return {}
+
+
+def meeting_race_cards(body: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """JSJ002 lists the cards of every race of a meeting: race number -> card."""
+    return {
+        no: race
+        for race in body.get("raceInfo") or []
+        if (no := _race_no(race.get("raceNo"))) is not None
+    }
+
+
 def card_entries(card: dict[str, Any], summary: dict[str, Any] | None = None) -> list[Row]:
-    """Entries of one race card (JSJ006), e.g. of an upcoming race fetched live.
+    """Entries of one race card (a JSJ002 `raceInfo` item or JSJ006), e.g. fetched live.
 
     `summary` is the race's item of the meeting entry list (JSJ017 rInfo), used as a
     fallback for riders missing from the card.

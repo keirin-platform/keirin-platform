@@ -183,12 +183,17 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, str]]] = []
+        card = jsj006()
+        card["raceNo"] = 1
         self.responses = {
             ("JSJ057", ""): jsj057(),
             ("JSJ001", MEETING_ENC): jsj001(),
             ("JSJ017", MEETING_ENC): jsj017(),
             ("JSJ018", MEETING_ENC): jsj018(),
-            ("JSJ006", race_enc(1)): jsj006(),
+            # JSJ002 lists the cards of every race of the meeting. The card object is shared
+            # with the per-race JSJ006 response so that tests can tweak either one.
+            ("JSJ002", race_enc(1)): {"raceInfo": [card], "resultCd": 0},
+            ("JSJ006", race_enc(1)): card,
             ("JSJ012", race_enc(1)): jsj012(),
         }
 

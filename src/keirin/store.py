@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
 
-from keirin.parse import TIME_SLOTS, card_entries, race_result
+from keirin.parse import TIME_SLOTS, card_entries, meeting_race_cards, race_result
 from keirin.score import History
 from keirin.storage import table_path
 
@@ -219,13 +219,19 @@ class Store:
         return header.get("C0201race") or []
 
     def _live_card(self, meeting: Row, race_no: int) -> list[Row]:
-        token = self._race_token(meeting, race_no)
         summary = next(
             (r for r in self._live("JSJ017", encp=meeting["enc"]).get("rInfo") or []
              if r.get("raceNo") == race_no),
             None,
         )  # fmt: skip
-        return card_entries(self._live("JSJ006", encp=token), summary)
+        # JSJ002 returns the cards of every race of the meeting. Ask with the first race's
+        # token so that all races of a meeting share one cached request.
+        card = meeting_race_cards(self._live("JSJ002", encp=self._race_token(meeting, 1))).get(
+            race_no
+        )
+        if card is None:
+            card = self._live("JSJ006", encp=self._race_token(meeting, race_no))
+        return card_entries(card, summary)
 
     def _race_token(self, meeting: Row, race_no: int) -> str:
         # The meeting header lists the race tokens in race order, also for upcoming days
