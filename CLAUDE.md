@@ -17,6 +17,7 @@
 - **PR のマージは Claude が行う**: CI が通ったら `gh pr merge <n> --merge --delete-branch --subject "<PRタイトル> (#<n>)"` でマージする。
   - merge commit 方式にして、オーナーの鍵で署名したコミットを main の履歴にそのまま残す（merge commit 自体は GitHub が署名する）。PR タイトルも Conventional Commits 形式で書く。
 - 決めたこと、調査結果、仕様の変更はこのファイルに追記する。
+- **ワークフローを変えたら、手動実行（workflow_dispatch）で起動まで確認する**。別リポジトリの再利用可能ワークフローを呼ぶ設定の誤り（例: `secrets:` を `with:` の途中に入れた）は、actionlint でも検出できず、`startup_failure` になる（2026-10-05 に実際に起きた）。
 - **組織（keirin-platform）のリポジトリ名には `keirin-` を付ける**（オーナー指定、2026-10-03）。例: keirin-platform、keirin-data、keirin-blog。
   - 例外: `.github`（組織のプロフィール `profile/README.md` 用。GitHub が決めた名前）。
 
@@ -235,7 +236,8 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [ ] 検討: オッズの収集（必要になったら相談する）
 - [ ] 選手の特徴の検出コード（番手捲り率、共倒れ率、経験ベイズ）。並びがたまってきたら試す。本格的な分析は 2027-02 ごろ（docs/rider-traits.md）
 - [x] 注目選手の出走通知の仕組み（2026-10-05。docs/notifications.md）
-- [ ] Discord の Webhook の作成と Secret `DISCORD_WEBHOOK_URL` の登録（オーナー）、テスト通知
+- [x] Discord の Webhook の作成と Secret `DISCORD_WEBHOOK_URL` の登録（オーナー、2026-10-05）、テスト通知の送信を確認
+- [x] 監視リストの最初の1人: 橋本 智昭（014714、番手。オーナー指定。番手捲りが多い印象）。出場予定は小倉F1 10/11〜、大宮F2 10/22〜
 - [ ] 選手の特徴の分析で見つかった選手を watchlist.toml に追加する
 - [x] 改善: 出走表をレースごとの `JSJ006` から、開催ごとの `JSJ002` に切り替えた（2026-10-04。10/01 分で 192 → 119 リクエスト、表は完全に一致。ビューアの当日分も JSJ002）
 - [x] keirin-blog リポジトリと、はてなブログ同期（`hatena.py`、`blog-sync.yml`）
