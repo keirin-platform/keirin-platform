@@ -20,6 +20,7 @@
 | `JSJ001` | `encp=<開催>` | 共通ヘッダ | `C0201data.raceName` 開催タイトル、`joName`、`C0201race[]`（レース順の**レーストークン `encParaR`**。翌日分もある）、`C0201kaisai[]`（開催の各日の開催トークン） |
 | `JSJ017` | `encp=<開催>` | 出走表一覧 (PJ0305) | `kaisaihi`、`rInfo[]`: `raceNo`、`syumoku` 種目、`denTime` 締切、`stTime` 発走、`sInfo[]`（`syaban`、`senNo`、`senName`、`huken`、`kyaku`） |
 | `JSJ018` | `encp=<開催>` | 結果一覧 (PJ0306) | `kday`、`resultList[]`: `rclblRaceNo`、1〜3着、2車単/3連単の払戻、**`raceRVPrm` = レーストークン** |
+| `JSJ002` | `encp=<レース>`（開催のどのレースでもよい） | 出走表（全レース） | **開催の全レースの詳細出走表を1回で返す**。`raceInfo[]`（`raceNo` ごと）に、JSJ006 と同じ `sensyuTypeInfo[]` のほか、枠番 `wakuban`、距離 `kyori`、周回 `shukai`、締切・発走時刻が入る。**2026-10-04 から JSJ006 の代わりに使う**（1日のリクエストが約4割減る。10/01 分で表が完全に一致することを確認） |
 | `JSJ006` | `encp=<レース>` | 出走表 (PJ0315) | `sensyuTypeInfo[]`: 登録番号、級班、脚質、期別、年齢、`heikinTokuten` 競走得点、逃/捲/差/マーク回数、B/H/S回数、勝率、2連対率、3連対率、今場所と直近4場所の成績 |
 | `JSJ012` | `encp=<レース>` | 結果 (PJ0326) | `tenki` 天候、`husoku` 風速、`tyakujyunItemSubData[]`（着、車番、着差、上がり、決まり手、B/H、個人状況）、`haraiGakuSubData`（全券種の払戻） |
 
@@ -39,7 +40,6 @@
 
 | type | 内容 |
 |---|---|
-| `JSJ002` | 開催の**全レースの詳細出走表**を1回で返す（`encp=<レース>`、`raceInfo[]` に12レース分。選手の項目は JSJ006 と同じで、枠番 `wakuban`、距離 `kyori`、周回 `shukai` も付く。2026-10-04 確認。今は未使用） |
 | `JSJ014` | 開催の全日程のレーストークン。古い開催や、まだ始まっていない日の開催トークンでは `resultCd=-1` になる（ビューアでは予備として使う） |
 | `JSJ015` | 開催の番組情報（ランキングなど） |
 | `JSJ016` | 場外の発売状況 |

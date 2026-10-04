@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-from conftest import DAY, FakeClient
+from conftest import DAY, FakeClient, race_enc
 
 from keirin.collect import fetch_day
 from keirin.parse import TABLES, parse_bundle
@@ -18,7 +18,7 @@ def test_fetch_day_follows_day_meeting_race(fake_client):
         "JSJ001",
         "JSJ017",
         "JSJ018",
-        "JSJ006",
+        "JSJ002",
         "JSJ012",
     ]
     assert fake_client.calls[0][1] == {"kday": "20260110"}
@@ -122,3 +122,23 @@ def test_parse_is_stable_across_raw_roundtrip(fake_client):
     # storage.write_raw serializes with sort_keys=True, which reorders dict keys.
     restored = json.loads(json.dumps(bundle, sort_keys=True))
     assert parse_bundle(restored) == parse_bundle(bundle)
+
+
+def test_falls_back_to_per_race_cards_when_jsj002_is_empty(fake_client):
+    fake_client.responses[("JSJ002", race_enc(1))] = {"resultCd": -1}
+    bundle = fetch_day(fake_client, date.fromisoformat(DAY))
+    assert [c[0] for c in fake_client.calls][-3:] == ["JSJ002", "JSJ006", "JSJ012"]
+    entries = {e["car_no"]: e for e in parse_bundle(bundle)["entries"]}
+    assert entries[1]["score"] == 90.25
+
+
+def test_old_bundles_with_jsj006_parse_the_same(fake_client):
+    new = fetch_day(fake_client, date.fromisoformat(DAY))
+    # Bundles collected before 2026-10-04 have JSJ006 per race and no JSJ002.
+    old = {**new, "responses": [r for r in new["responses"] if r["type"] != "JSJ002"]}
+    old["responses"].insert(
+        -1,
+        {"type": "JSJ006", "params": {"encp": race_enc(1)},
+         "body": fake_client.responses[("JSJ006", race_enc(1))]},
+    )  # fmt: skip
+    assert parse_bundle(old) == parse_bundle(new)
