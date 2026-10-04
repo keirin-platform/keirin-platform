@@ -7,6 +7,8 @@ on:
     # 03:30 JST, after midnight races are settled. Each run keeps everything since
     # `since` complete, fetching at most 15 missing days (newest first).
     - cron: "30 18 * * *"
+    # 16:00 JST: line formations only, for meetings that publish them late (night / midnight).
+    - cron: "0 7 * * *"
   workflow_dispatch:
     inputs:
       date:
@@ -25,6 +27,11 @@ on:
         description: "First day of the rolling window. Empty = 2025-12-01"
         required: false
         default: ""
+      lines_only:
+        description: "Only capture upcoming line formations"
+        type: boolean
+        required: false
+        default: false
       code_ref:
         description: "keirin-platform ref to run"
         required: false
@@ -46,4 +53,5 @@ jobs:
       # Keep everything since 2025-12-01 (covers the 2026-01 and 2026-07 class changes
       # for the race score analysis); filled 15 days per run, newest first.
       since: ${{ inputs.since || '2025-12-01' }}
+      lines_only: ${{ github.event.schedule == '0 7 * * *' || inputs.lines_only == true }}
       code_ref: ${{ inputs.code_ref || 'main' }}
