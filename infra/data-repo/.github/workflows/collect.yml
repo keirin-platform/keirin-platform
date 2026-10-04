@@ -5,7 +5,7 @@ name: collect
 on:
   schedule:
     # 03:30 JST, after midnight races are settled. Each run keeps everything since
-    # `since` complete, fetching at most 10 missing days (newest first).
+    # `since` complete, fetching at most 15 missing days (newest first).
     - cron: "30 18 * * *"
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ on:
         required: false
         default: ""
       max_days:
-        description: "Fetch at most N missing days (newest first). Empty = 10 for the window, no limit for an explicit range"
+        description: "Fetch at most N missing days (newest first). Empty = 15 for the window, no limit for an explicit range"
         required: false
         default: ""
       since:
@@ -44,6 +44,6 @@ jobs:
       to: ${{ inputs.to || '' }}
       max_days: ${{ inputs.max_days || '' }}
       # Keep everything since 2025-12-01 (covers the 2026-01 and 2026-07 class changes
-      # for the race score analysis); filled 10 days per run, newest first.
+      # for the race score analysis); filled 15 days per run, newest first.
       since: ${{ inputs.since || '2025-12-01' }}
       code_ref: ${{ inputs.code_ref || 'main' }}
