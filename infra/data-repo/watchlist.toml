@@ -1,0 +1,12 @@
+# 通知する選手と条件（keirin-platform の docs/notifications.md）
+#
+# 条件に合う出走（当日・翌日）が見つかると、Discord に通知する。
+# 同じ出走は一度しか通知しない（送った記録は notify/sent.json）。
+#
+# [[watch]]
+# racer_id = "014779"                      # 登録番号（必須）
+# name = "名川 豊"                          # 表示名
+# reason = "決勝以外で番手捲り率が高い"       # 通知に載せる理由
+# positions = ["番手"]                      # 先頭 / 番手 / 3番手 … / 単騎 / 競り。省略すると位置を問わない
+# leader_styles = ["逃", "両"]              # 自分のラインの先頭の脚質（省略可）
+# exclude_finals = true                     # 決勝を除く（省略すると false）
