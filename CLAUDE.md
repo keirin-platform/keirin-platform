@@ -67,6 +67,9 @@
 6. **選手の特徴（クセ）を見つける分析**（2026-10-05）。例: 決勝でもないのに番手捲りをよくする選手、先行ラインの番手で、ラインが捲られたときに共倒れしやすい選手。
    並びと結果（決まり手、B・H）から検出して、経験ベイズで少ない件数を補正する。計画は [docs/rider-traits.md](docs/rider-traits.md)。
 
+7. **注目選手の出走通知**（2026-10-05）。特徴的な選手が条件（番手など）に合うレースに出るとき、Discord に通知する。
+   監視リストはデータリポジトリの `watchlist.toml`、Webhook は Secret `DISCORD_WEBHOOK_URL`。詳しくは [docs/notifications.md](docs/notifications.md)。
+
 ## 構成
 
 ```
@@ -162,7 +165,8 @@ src/keirin/
   analysis.py       補正つき出走表、精度評価（公式、補正後、レーティング）、Δ の推定
   rating.py         相手の強さを考慮したレーティング（Plackett–Luce、時間減衰、得点換算）
   hatena.py         keirin-blog の記事をはてなブログに同期（AtomPub、Fotolife、状態ファイル）
-  lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）
+  lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）、位置のラベル
+  notify.py         注目選手の出走通知（watchlist.toml の照合、Discord の Webhook、送信済みの記録）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
   viewer.py         出走表ビューア（Streamlit）。並びの図（車番の色、ラインごと、競りは縦に重ねる）、
@@ -230,6 +234,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [ ] オッズパークの並びの backfill（メインの backfill が終わる 10/24 ごろに自動で始まり、2027-01 中旬〜下旬にそろう見込み）
 - [ ] 検討: オッズの収集（必要になったら相談する）
 - [ ] 選手の特徴の検出コード（番手捲り率、共倒れ率、経験ベイズ）。並びがたまってきたら試す。本格的な分析は 2027-02 ごろ（docs/rider-traits.md）
+- [x] 注目選手の出走通知の仕組み（2026-10-05。docs/notifications.md）
+- [ ] Discord の Webhook の作成と Secret `DISCORD_WEBHOOK_URL` の登録（オーナー）、テスト通知
+- [ ] 選手の特徴の分析で見つかった選手を watchlist.toml に追加する
 - [x] 改善: 出走表をレースごとの `JSJ006` から、開催ごとの `JSJ002` に切り替えた（2026-10-04。10/01 分で 192 → 119 リクエスト、表は完全に一致。ビューアの当日分も JSJ002）
 - [x] keirin-blog リポジトリと、はてなブログ同期（`hatena.py`、`blog-sync.yml`）
 - [x] はてなブログ（keirin-platform.hatenablog.com、はてな ID: keirin-platform）の作成と、keirin-blog の Variables / Secret の登録（オーナー、2026-10-03）
