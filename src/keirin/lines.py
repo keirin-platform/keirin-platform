@@ -85,6 +85,16 @@ class Formation:
         return sorted(rows, key=lambda r: r["car_no"])
 
 
+def position_label(info: dict | None) -> str:
+    """先頭 / 番手 / 3番手 … / 単騎, with （競り） for a contested position."""
+    if not info:
+        return ""
+    if info["line_size"] == 1:
+        return "単騎"
+    label = {1: "先頭", 2: "番手"}.get(info["line_pos"], f"{info['line_pos']}番手")
+    return label + ("（競り）" if info["contested"] else "")
+
+
 def from_ninfo(ninfo: list[dict[str, Any]] | None) -> Formation | None:
     """keirin.jp: same narabiX = same position (several narabiY = contested); gaps split lines."""
     cells = sorted(
@@ -204,8 +214,28 @@ def _merge(captures: dict[str, dict[str, Any]], key: str, capture: dict[str, Any
 # --- keirin.jp (going forward) -------------------------------------------------------
 
 
-def collect_upcoming(client: ApiClient, data_dir: Path, day: date) -> int:
-    """Capture the formations keirin.jp shows for the day's races; returns new captures."""
+@dataclass
+class UpcomingRace:
+    """A race of today / tomorrow as keirin.jp lists it (for captures and notifications)."""
+
+    day: date
+    venue_code: str
+    venue_name: str
+    race_no: int
+    race_class: str
+    start_time: str
+    riders: list[dict[str, Any]]  # car_no, racer_id, name, style
+    formation: Formation | None
+
+
+def collect_upcoming(
+    client: ApiClient, data_dir: Path, day: date, races: list[UpcomingRace] | None = None
+) -> int:
+    """Capture the formations keirin.jp shows for the day's races; returns new captures.
+
+    When `races` is given, every listed race of the day is appended to it (with its
+    current formation, if shown) so that notifications need no further request.
+    """
     captures = read_captures(data_dir, day)
     added = 0
     now = datetime.now(JST).isoformat(timespec="seconds")
@@ -214,6 +244,28 @@ def collect_upcoming(client: ApiClient, data_dir: Path, day: date) -> int:
             continue
         entry_list = client.get("JSJ017", encp=meeting["encPrm"])
         for race in entry_list.get("rInfo") or []:
+            if races is not None:
+                races.append(
+                    UpcomingRace(
+                        day=day,
+                        venue_code=str(meeting.get("KeirinCd", "")),
+                        venue_name=str(meeting.get("jyoName", "")),
+                        race_no=int(race.get("raceNo") or 0),
+                        race_class=str(race.get("syumoku") or ""),
+                        start_time=str(race.get("stTime") or ""),
+                        riders=[
+                            {
+                                "car_no": int(r["syaban"]),
+                                "racer_id": str(r.get("senNo") or ""),
+                                "name": re.sub(r"\s+", " ", str(r.get("senName") or "")).strip(),
+                                "style": str(r.get("kyaku") or ""),
+                            }
+                            for r in race.get("sInfo") or []
+                            if r.get("syaban")
+                        ],
+                        formation=from_ninfo(race.get("nInfo")),
+                    )
+                )
             if not race.get("nInfo"):
                 continue  # not published yet, or the race is already over
             key = f"{meeting.get('KeirinCd')}-{race.get('raceNo')}"

@@ -7,12 +7,12 @@ import csv
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
 
-from keirin import analysis, github_commit, hatena, lines, rating, storage
+from keirin import analysis, github_commit, hatena, lines, notify, rating, storage
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
@@ -177,15 +177,41 @@ def cmd_blog_sync(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def _discord() -> notify.Discord | None:
+    url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    return notify.Discord(url) if url else None
+
+
 def cmd_collect_lines(args: argparse.Namespace) -> int:
     start = args.date or today_jst()
+    races: list[lines.UpcomingRace] = []
     with KeirinClient(min_interval=args.min_interval) as client:
         try:
             for day in lines.upcoming_days(start, args.days):
-                lines.collect_upcoming(client, args.data_dir, day)
+                lines.collect_upcoming(client, args.data_dir, day, races)
         except KeirinApiError as e:
             log.error("%s", e)
             return 1
+    if args.watchlist:
+        rules = notify.load_watchlist(args.watchlist)
+        if rules:
+            discord = _discord()
+            if discord is None:
+                log.warning("DISCORD_WEBHOOK_URL is not set: matches are only logged")
+            sent = notify.SentLog.load(args.data_dir)
+            matches = notify.notify(races, rules, sent, discord)
+            sent.save(keep_since=start - timedelta(days=7))
+            log.info("%d watch rule(s), %d new match(es)", len(rules), len(matches))
+    return 0
+
+
+def cmd_discord_test(args: argparse.Namespace) -> int:
+    discord = _discord()
+    if discord is None:
+        log.error("DISCORD_WEBHOOK_URL is not set")
+        return 2
+    discord.send("keirin-platform からのテスト通知です。この通知が届けば設定は完了しています。")
+    log.info("test notification sent")
     return 0
 
 
@@ -282,7 +308,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=int, default=2, help="number of days from --date (default: 2)")
     p.add_argument("--min-interval", type=float, default=1.0)
     p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.add_argument(
+        "--watchlist",
+        type=Path,
+        help="notify matching races of watched riders to Discord (DISCORD_WEBHOOK_URL)",
+    )
     p.set_defaults(func=cmd_collect_lines)
+
+    p = sub.add_parser("discord-test", help="send a test message to DISCORD_WEBHOOK_URL")
+    p.set_defaults(func=cmd_discord_test)
 
     p = sub.add_parser(
         "backfill-lines", help="fetch missing line formations of collected races from Oddspark"

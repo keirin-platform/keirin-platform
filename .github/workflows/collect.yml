@@ -33,10 +33,18 @@ on:
         description: Only capture upcoming line formations from keirin.jp (evening run).
         type: boolean
         default: false
+      discord_test:
+        description: Only send a test notification to DISCORD_WEBHOOK_URL.
+        type: boolean
+        default: false
       code_ref:
         description: Ref of keirin-platform to run.
         type: string
         default: main
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        description: Discord webhook for watchlist notifications (docs/notifications.md).
+        required: false
 
 permissions:
   contents: read
@@ -66,7 +74,7 @@ jobs:
 
       - name: Collect
         id: collect
-        if: ${{ !inputs.lines_only }}
+        if: ${{ !inputs.lines_only && !inputs.discord_test }}
         working-directory: code
         env:
           DATE: ${{ inputs.date }}
@@ -92,25 +100,36 @@ jobs:
 
       # Line formations (docs/lines.md). keirin.jp shows them only until the race is over,
       # so capture today's and tomorrow's on every run.
-      - name: Capture upcoming lines (keirin.jp)
+      # The same requests also feed the watchlist notifications (docs/notifications.md).
+      - name: Capture upcoming lines (keirin.jp) and notify
         id: lines
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && !inputs.discord_test }}
         working-directory: code
         env:
           DAYS: ${{ inputs.lines_only && '1' || '2' }}
-        run: uv run --locked --no-dev keirin collect-lines --data-dir ../data --days "$DAYS"
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          uv run --locked --no-dev keirin collect-lines --data-dir ../data --days "$DAYS" \
+            --watchlist ../data/watchlist.toml
 
       # Past and missed formations from Oddspark: 10 s between pages (robots.txt), at most
       # 50 minutes per run. Waits until the main collection has no missing days.
       - name: Backfill lines (Oddspark)
         id: backfill_lines
-        if: ${{ !cancelled() && !inputs.lines_only && steps.collect.outputs.since != '' }}
+        if: ${{ !cancelled() && !inputs.lines_only && !inputs.discord_test && steps.collect.outputs.since != '' }}
         working-directory: code
         env:
           SINCE: ${{ steps.collect.outputs.since }}
         run: |
           uv run --locked --no-dev keirin backfill-lines --data-dir ../data \
             --since "$SINCE" --budget-minutes 50
+
+      - name: Discord test
+        if: ${{ inputs.discord_test }}
+        working-directory: code
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: uv run --locked --no-dev keirin discord-test
 
       # Runs even if a step failed part-way, so what was fetched is kept.
       - name: Commit (signed by GitHub)
@@ -136,6 +155,9 @@ jobs:
             parts+=("lines ${line_days[0]}")
           elif [ "${#line_days[@]}" -gt 1 ]; then
             parts+=("lines ${#line_days[@]} days (${line_days[0]}..${line_days[-1]})")
+          fi
+          if [ -n "$(git -C ../data status --porcelain -- notify)" ]; then
+            parts+=("notifications")
           fi
           if [ "${#parts[@]}" -eq 0 ]; then
             echo "no new data"
