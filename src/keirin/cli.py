@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 
-from keirin import analysis, github_commit, hatena, rating, storage
+from keirin import analysis, github_commit, hatena, lines, rating, storage
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
@@ -177,6 +177,40 @@ def cmd_blog_sync(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_collect_lines(args: argparse.Namespace) -> int:
+    start = args.date or today_jst()
+    with KeirinClient(min_interval=args.min_interval) as client:
+        try:
+            for day in lines.upcoming_days(start, args.days):
+                lines.collect_upcoming(client, args.data_dir, day)
+        except KeirinApiError as e:
+            log.error("%s", e)
+            return 1
+    return 0
+
+
+def cmd_backfill_lines(args: argparse.Namespace) -> int:
+    until = yesterday_jst()
+    waiting = lines.missing_main_days(args.data_dir, args.since, until)
+    if waiting:
+        # Race lists come from the main collection; let it finish first.
+        log.info("main collection still missing %d days; line backfill waits", len(waiting))
+        return 0
+    client = lines.OddsparkClient(min_interval=args.min_interval)
+    try:
+        fetched = lines.backfill(
+            client,
+            args.data_dir,
+            date_range(args.since, until),
+            budget_seconds=args.budget_minutes * 60,
+        )
+    except KeirinApiError as e:
+        log.error("%s", e)
+        return 1
+    log.info("fetched %d Oddspark pages", fetched)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="keirin", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -242,6 +276,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-races", type=int, default=6)
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_estimate_deltas)
+
+    p = sub.add_parser("collect-lines", help="capture upcoming line formations from keirin.jp")
+    p.add_argument("--date", type=date.fromisoformat, help="first day (default: today in JST)")
+    p.add_argument("--days", type=int, default=2, help="number of days from --date (default: 2)")
+    p.add_argument("--min-interval", type=float, default=1.0)
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_collect_lines)
+
+    p = sub.add_parser(
+        "backfill-lines", help="fetch missing line formations of collected races from Oddspark"
+    )
+    p.add_argument("--since", type=date.fromisoformat, required=True)
+    p.add_argument("--budget-minutes", type=float, default=50.0)
+    p.add_argument(
+        "--min-interval",
+        type=float,
+        default=lines.ODDSPARK_INTERVAL,
+        help="seconds between pages (robots.txt Crawl-delay: 10)",
+    )
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_backfill_lines)
 
     p = sub.add_parser("blog-sync", help="push changed articles of keirin-blog to Hatena Blog")
     p.add_argument("--repo-dir", type=Path, default=Path("."))
