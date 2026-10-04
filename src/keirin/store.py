@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
 
+from keirin.lines import Formation, formation_of, from_ninfo, read_captures
 from keirin.parse import TIME_SLOTS, card_entries, meeting_race_cards, race_result
 from keirin.score import History
 from keirin.storage import table_path
@@ -218,12 +219,34 @@ class Store:
         header = self._live("JSJ001", encp=meeting["enc"]).get("C0201data") or {}
         return header.get("C0201race") or []
 
-    def _live_card(self, meeting: Row, race_no: int) -> list[Row]:
-        summary = next(
+    # --- line formation ---------------------------------------------------------------
+
+    def formation(self, day: date, venue_code: str, race_no: int) -> Row | None:
+        """Line formation: keirin.jp's current prediction while shown, else the captured one."""
+        if not self.is_collected(day):
+            summary = self._live_summary(self.meeting(day, venue_code), race_no) or {}
+            live = from_ninfo(summary.get("nInfo"))
+            if live is not None:
+                return _formation_row(live, summary.get("line") or "", "keirin.jp")
+        capture = read_captures(self.data_dir, day).get(f"{venue_code}-{race_no}")
+        captured = formation_of(capture) if capture else None
+        if captured is None:
+            return None
+        label = (
+            (capture.get("data") or {}).get("line", "") if capture["source"] == "keirin.jp" else ""
+        )
+        return _formation_row(captured, label or "", capture["source"])
+
+    def _live_summary(self, meeting: Row, race_no: int) -> Row | None:
+        """The race's item of the meeting entry list (JSJ017, one cached request per meeting)."""
+        return next(
             (r for r in self._live("JSJ017", encp=meeting["enc"]).get("rInfo") or []
              if r.get("raceNo") == race_no),
             None,
         )  # fmt: skip
+
+    def _live_card(self, meeting: Row, race_no: int) -> list[Row]:
+        summary = self._live_summary(meeting, race_no)
         # JSJ002 returns the cards of every race of the meeting. Ask with the first race's
         # token so that all races of a meeting share one cached request.
         card = meeting_race_cards(self._live("JSJ002", encp=self._race_token(meeting, 1))).get(
@@ -287,6 +310,23 @@ class Store:
         if self._client is None:
             raise NotFound("live data is disabled")
         return self._client.get(type_, **params)
+
+
+_LINE_COUNTS = {1: "一本", 2: "二分戦", 3: "三分戦", 4: "四分戦"}
+
+
+def _formation_row(formation: Formation, label: str, source: str) -> Row:
+    by_car = {
+        r["car_no"]: {k: r[k] for k in ("line_no", "line_pos", "line_size", "contested")}
+        for r in formation.rows({}, source)
+    }
+    return {
+        "text": formation.text().replace("/", " / "),
+        "label": label or _LINE_COUNTS.get(len(formation.lines), "細切れ"),
+        "source": source,
+        "lines": [[list(position) for position in line] for line in formation.lines],
+        "by_car": by_car,
+    }
 
 
 def _result_entry(e: Row) -> Row:

@@ -56,7 +56,66 @@ def _fetch[T](store: Store, day: date, what: str, fn: Callable[..., T], *args) -
         return fn(*args)
 
 
-def card_frame(rows: list[dict], with_results: bool) -> pd.DataFrame:
+CAR_COLORS = {  # car number: (background, text)
+    1: ("#ffffff", "#222222"),
+    2: ("#222222", "#ffffff"),
+    3: ("#e33b3b", "#ffffff"),
+    4: ("#2f6fde", "#ffffff"),
+    5: ("#f2cf2c", "#222222"),
+    6: ("#2e9e4f", "#ffffff"),
+    7: ("#f08a24", "#222222"),
+    8: ("#e66fb2", "#222222"),
+    9: ("#7b3fc4", "#ffffff"),
+}
+
+
+def position_label(info: dict | None) -> str:
+    """先頭 / 番手 / 3番手 … / 単騎, with （競り） for a contested position."""
+    if not info:
+        return ""
+    if info["line_size"] == 1:
+        return "単騎"
+    label = {1: "先頭", 2: "番手"}.get(info["line_pos"], f"{info['line_pos']}番手")
+    return label + ("（競り）" if info["contested"] else "")
+
+
+def _car_badge(car: int) -> str:
+    bg, fg = CAR_COLORS.get(car, ("#888888", "#ffffff"))
+    return (
+        f'<span style="display:inline-block;min-width:1.9em;padding:2px 0;text-align:center;'
+        f"border-radius:5px;border:1px solid rgba(128,128,128,.6);font-weight:700;"
+        f'background:{bg};color:{fg}">{car}</span>'
+    )
+
+
+def formation_html(formation: dict) -> str:
+    """Lines as boxes of car badges, front first; a contested position is stacked."""
+    boxes = []
+    for line in formation["lines"]:
+        cells = []
+        for position in line:
+            if len(position) == 1:
+                cells.append(_car_badge(position[0]))
+            else:
+                stacked = "".join(_car_badge(c) for c in position)
+                cells.append(
+                    '<span style="display:inline-flex;flex-direction:column;gap:2px;'
+                    'padding:2px;border:1px dashed rgba(128,128,128,.8);border-radius:6px" '
+                    f'title="競り">{stacked}</span>'
+                )
+        boxes.append(
+            '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 6px;'
+            'border:1px solid rgba(128,128,128,.45);border-radius:8px">'
+            + "".join(cells)
+            + "</span>"
+        )
+    return (
+        '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:4px 0 2px">'
+        '<span style="opacity:.6;font-size:.85rem">← 進行方向</span>' + "".join(boxes) + "</div>"
+    )
+
+
+def card_frame(rows: list[dict], with_results: bool, formation: dict | None = None) -> pd.DataFrame:
     def rank(r: dict) -> str:
         if r["rank_official"] is None:
             return "-"
@@ -77,6 +136,13 @@ def card_frame(rows: list[dict], with_results: bool) -> pd.DataFrame:
             for r in rows
         ],
         "脚質": [r["style"] for r in rows],
+        "ライン": [
+            ((formation or {}).get("by_car", {}).get(r["car_no"]) or {}).get("line_no")
+            for r in rows
+        ],
+        "位置": [
+            position_label((formation or {}).get("by_car", {}).get(r["car_no"])) for r in rows
+        ],
         "競走得点": [r["score"] for r in rows],
         "補正得点": [r["corrected"] for r in rows],
         "補正": [r["adjustment"] or None for r in rows],
@@ -101,7 +167,7 @@ def _style(frame: pd.DataFrame):
         frame.style.apply(highlight, axis=1)
         .format({"競走得点": "{:.2f}", "補正得点": "{:.2f}", "補正": "{:+.2f}"}, na_rep="")
         .format({"勝率": "{:.0f}", "2連対率": "{:.0f}", "3連対率": "{:.0f}"}, na_rep="-")
-        .format({"年齢": "{:.0f}", "期": "{:.0f}"}, na_rep="")
+        .format({"年齢": "{:.0f}", "期": "{:.0f}", "ライン": "{:.0f}"}, na_rep="")
     )
 
 
@@ -162,9 +228,18 @@ def render(store: Store, today: date) -> None:
     st.markdown(
         f"### {meeting['venue_name']} {race_no}R　{race['race_class']}　{race['start_time']} 発走"
     )
+    try:
+        formation = _fetch(store, day, "並び", store.formation, day, venue, race_no)
+    except KeirinApiError:
+        formation = None
+    if formation:
+        st.markdown(formation_html(formation), unsafe_allow_html=True)
+        st.caption(f"並び: {formation['text']}（{formation['label']}）")
+    else:
+        st.caption("並び: 未公開または未取得")
     tab_card, tab_result = st.tabs(["出走表", "結果"])
     with tab_card:
-        _render_card(store, day, rows)
+        _render_card(store, day, rows, formation)
     with tab_result:
         try:
             result = _fetch(store, day, "結果", store.result, day, venue, race_no)
@@ -175,14 +250,14 @@ def render(store: Store, today: date) -> None:
     st.caption("データ出典: KEIRIN.JP（個人利用）。補正得点は推定値です。")
 
 
-def _render_card(store: Store, day: date, rows: list[dict]) -> None:
+def _render_card(store: Store, day: date, rows: list[dict], formation: dict | None) -> None:
     start = window_start(day)
     if rows and not all(r["complete"] for r in rows):
         st.warning(
             f"補正に必要な期間（{start.month}/{start.day}〜前日）の一部がまだ収集されていません"
             f"（データは {store.last_collected or '未収集'} まで）。補正は不完全です。"
         )
-    frame = card_frame(rows, with_results=store.is_collected(day))
+    frame = card_frame(rows, with_results=store.is_collected(day), formation=formation)
     st.dataframe(_style(frame), hide_index=True, width="stretch")
     d = STEP_DELTAS
     st.caption(
