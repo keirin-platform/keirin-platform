@@ -19,6 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from keirin.client import KeirinApiError, KeirinClient
+from keirin.lines import position_label
 from keirin.score import STEP_DELTAS, window_start
 from keirin.store import CachedClient, NotFound, Store
 from keirin.timeutil import today_jst
@@ -67,16 +68,6 @@ CAR_COLORS = {  # car number: (background, text)
     8: ("#e66fb2", "#222222"),
     9: ("#7b3fc4", "#ffffff"),
 }
-
-
-def position_label(info: dict | None) -> str:
-    """先頭 / 番手 / 3番手 … / 単騎, with （競り） for a contested position."""
-    if not info:
-        return ""
-    if info["line_size"] == 1:
-        return "単騎"
-    label = {1: "先頭", 2: "番手"}.get(info["line_pos"], f"{info['line_pos']}番手")
-    return label + ("（競り）" if info["contested"] else "")
 
 
 def _car_badge(car: int) -> str:

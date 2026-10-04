@@ -77,7 +77,7 @@ def test_result_tab(tmp_path, monkeypatch):
 
 
 def test_position_label():
-    from keirin.viewer import position_label
+    from keirin.lines import position_label
 
     def info(pos, size, contested=False):
         return {"line_no": 1, "line_pos": pos, "line_size": size, "contested": contested}
