@@ -59,3 +59,6 @@ keirin.jp の結果データには並びが残らない（レース後は空に�
   - data は、keirin.jp なら `nInfo`、`line`、`seri`、`narabiYCnt`。オッズパークなら `ul.keirinRyosouline` の HTML（ページ全体や短評は保存しない）。
   - 最初に取れた並びを残し、空の結果では上書きしない。
 - **テーブル** `tables/lines/YYYY/YYYY-MM-DD.csv`（1行 = 1選手）: スキーマは docs/data-schema.md。
+
+## 並びの推定（予想用）
+- 並びが分からないレース（過去分で並びが未収集のもの、当日の未公開のもの）は、予想のために府県（地区）と脚質から並びを推定する（`lines.guess_formation`）。規則と精度は [prediction.md](prediction.md)。

@@ -1,4 +1,4 @@
-"""Streamlit viewer: race cards with class-change corrected scores.
+"""Streamlit viewer: race cards with class-change corrected scores, and predictions.
 
 Deployed on Streamlit Community Cloud from the private data repository, whose
 ``streamlit_app.py`` just calls :func:`main` (see infra/data-repo/). Access is
@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from keirin import predict
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.lines import position_label
 from keirin.score import STEP_DELTAS, window_start
@@ -31,6 +32,8 @@ TIME_SLOTS = {
     "midnight": "ミッドナイト",
     "morning": "モーニング",
 }
+GROUP_NAMES = {"S": "S級", "A": "A級", "L": "L級（ガールズ）"}
+log = logging.getLogger(__name__)
 UP_BG, DOWN_BG = (
     "background-color: rgba(46, 160, 67, .22)",
     "background-color: rgba(218, 54, 51, .2)",
@@ -48,6 +51,13 @@ def _store(data_dir: str, version: str) -> Store:
     # Interactive use: give up quickly and show an error instead of spinning for minutes.
     client = KeirinClient(min_interval=1.0, timeout=8.0, max_retries=2, backoff=2.0)
     return Store(Path(data_dir), CachedClient(client))
+
+
+@st.cache_resource(show_spinner="予想モデルを学習しています…")
+def _model(data_dir: str, version: str) -> predict.Model:
+    path = Path(data_dir)
+    start = predict.recent_start(path, predict.TRAINING_DAYS)
+    return predict.fit(predict.load_races(path, start=start))
 
 
 def _fetch[T](store: Store, day: date, what: str, fn: Callable[..., T], *args) -> T:
@@ -162,7 +172,10 @@ def _style(frame: pd.DataFrame):
     )
 
 
-def render(store: Store, today: date) -> None:
+def render(
+    store: Store, today: date, model: Callable[[], predict.Model | None] | None = None
+) -> None:
+    """Draws the page. `model` returns the prediction model (called when it is needed)."""
     st.title("競輪 補正得点")
     st.caption(f"データ: {store.last_collected or '未収集'} まで収集済み")
 
@@ -228,9 +241,10 @@ def render(store: Store, today: date) -> None:
         st.caption(f"並び: {formation['text']}（{formation['label']}）")
     else:
         st.caption("並び: 未公開または未取得")
-    tab_card, tab_result = st.tabs(["出走表", "結果"])
+    tab_card, tab_prediction, tab_result = st.tabs(["出走表", "予想", "結果"])
     with tab_card:
         _render_card(store, day, rows, formation)
+    result = None
     with tab_result:
         try:
             result = _fetch(store, day, "結果", store.result, day, venue, race_no)
@@ -238,7 +252,9 @@ def render(store: Store, today: date) -> None:
             st.error(f"KEIRIN.JP から結果を取得できませんでした（{e}）。")
         else:
             _render_result(result, rows)
-    st.caption("データ出典: KEIRIN.JP（個人利用）。補正得点は推定値です。")
+    with tab_prediction:  # last: the model may still have to be fitted
+        _render_prediction(model, race, rows, formation, result, store.is_collected(day))
+    st.caption("データ出典: KEIRIN.JP（個人利用）。補正得点と予想の確率は推定値です。")
 
 
 def _render_card(store: Store, day: date, rows: list[dict], formation: dict | None) -> None:
@@ -333,12 +349,106 @@ def _render_result(result: dict | None, card_rows: list[dict]) -> None:
         st.dataframe(payout_frame(result), hide_index=True, width="stretch")
 
 
+def prediction_frame(
+    prediction: predict.Prediction, card_rows: list[dict], result: dict | None
+) -> pd.DataFrame:
+    """Probabilities in percent, the most likely winner first; the finish once known."""
+    card = {r["car_no"]: r for r in card_rows}
+    order = sorted(
+        range(len(prediction.cars)),
+        key=lambda i: (-prediction.probs[i, 0], prediction.cars[i]),
+    )
+    cars = [prediction.cars[i] for i in order]
+    data = {
+        "車": cars,
+        "選手": [card[c]["racer_name"] for c in cars],
+        "位置": [position_label(prediction.by_car.get(c)) for c in cars],
+        "競走得点": [card[c]["score"] for c in cars],
+        "1着": [100 * prediction.probs[i, 0] for i in order],
+        "2着以内": [100 * prediction.probs[i, 1] for i in order],
+        "3着以内": [100 * prediction.probs[i, 2] for i in order],
+    }
+    if result is not None:
+        finish = {e["car_no"]: e["finish"] or e["notes"] or "-" for e in result["entries"]}
+        data["着"] = [finish.get(c, "") for c in cars]
+    return pd.DataFrame(data)
+
+
+def _render_prediction(
+    load_model: Callable[[], predict.Model | None] | None,
+    race: dict,
+    rows: list[dict],
+    formation: dict | None,
+    result: dict | None,
+    collected: bool,
+) -> None:
+    try:
+        model = load_model() if load_model else None
+    except Exception:  # keep the rest of the page usable
+        log.exception("fitting the prediction model failed")
+        st.error("予想モデルを学習できませんでした。時間をおいて再読み込みしてください。")
+        return
+    if model is None or not model.params:
+        st.info("予想モデルを学習できるデータがまだありません。")
+        return
+    prediction = predict.predict_race(
+        model, race["race_class"], rows, (formation or {}).get("by_car")
+    )
+    if prediction is None:
+        st.info(
+            f"このレース（{race['race_class']}）は予想できません"
+            "（学習したモデルのない種別か、出走が2人未満です）。"
+        )
+        return
+    percent = {
+        name: st.column_config.ProgressColumn(name, format="%.0f%%", min_value=0, max_value=100)
+        for name in ("1着", "2着以内", "3着以内")
+    }
+    st.dataframe(
+        prediction_frame(prediction, rows, result),
+        column_config={"競走得点": st.column_config.NumberColumn(format="%.2f"), **percent},
+        hide_index=True,
+        width="stretch",
+    )
+    period = (
+        f"{model.first_day:%Y/%m/%d}〜{model.last_day:%Y/%m/%d} の"
+        if model.first_day and model.last_day
+        else ""
+    )
+    if prediction.group == "L":
+        lines = "ガールズはラインがないので、全員単騎として計算しています。"
+    elif prediction.guessed:
+        lines = "並びが未公開なので、府県（地区）から推定した並びで計算しています。"
+    else:
+        lines = "並びは上の並びで計算しています。"
+    notes = [
+        "Plackett–Luce モデル（出走表の成績と並び）による推定値。"
+        f"学習: {period}{GROUP_NAMES[prediction.group]} {model.races[prediction.group]:,} レース。",
+        lines,
+    ]
+    names = {r["car_no"]: r["racer_name"] for r in rows}
+
+    def cars(numbers: list[int]) -> str:
+        return "、".join(f"{c}番 {names.get(c, '')}" for c in numbers)
+
+    if prediction.scratched:
+        notes.append(f"欠場（除いて計算）: {cars(prediction.scratched)}。")
+    if prediction.no_score:
+        notes.append(
+            f"得点のない選手（{cars(prediction.no_score)}）は、最も低い得点より3点低いとして計算しています。"
+        )
+    if collected:
+        notes.append("この日のレースも学習に入っているので、参考値です。")
+    st.caption(" ".join(notes))
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     st.set_page_config(page_title="競輪 補正得点", page_icon="🚴", layout="wide")
     data_dir = os.environ.get("KEIRIN_DATA_DIR", ".")
-    render(_store(data_dir, _data_version(Path(data_dir))), today_jst())
+    version = _data_version(Path(data_dir))
+    render(_store(data_dir, version), today_jst(), lambda: _model(data_dir, version))
 
 
 if __name__ == "__main__":

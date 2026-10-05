@@ -71,6 +71,10 @@
 7. **注目選手の出走通知**（2026-10-05）。特徴的な選手が条件（番手など）に合うレースに出るとき、Discord に通知する。
    監視リストはデータリポジトリの `watchlist.toml`、Webhook は Secret `DISCORD_WEBHOOK_URL`。詳しくは [docs/notifications.md](docs/notifications.md)。
 
+8. **予想: 各選手の1着・3着以内の確率**（2026-10-05）。**車券や回収率ではなく、確率で**出す（オーナー指定）。
+   当夜の武雄・小松島のミッドナイトで試作して追いかけたあと、ビューアの「予想」タブとして組み込んだ。
+   モデル（Plackett–Luce、出走表の成績と並び）と評価は [docs/prediction.md](docs/prediction.md)。
+
 ## 構成
 
 ```
@@ -149,6 +153,7 @@ uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --data-dir ../keirin-da
 uv run keirin estimate-deltas --boundary 2026-07-01 --data-dir ../keirin-data           # Δ の推定
 uv run keirin rating --as-of 2026-11-01 --top 20 --data-dir ../keirin-data              # レーティング上位
 uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --rating --data-dir ../keirin-data  # レーティングも評価
+uv run keirin predict-eval --date 2026-09-28 --to 2026-10-04 --data-dir ../keirin-data   # 予想の評価（前日までで学習）
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
 ```
@@ -166,12 +171,15 @@ src/keirin/
   analysis.py       補正つき出走表、精度評価（公式、補正後、レーティング）、Δ の推定
   rating.py         相手の強さを考慮したレーティング（Plackett–Luce、時間減衰、得点換算）
   hatena.py         keirin-blog の記事をはてなブログに同期（AtomPub、Fotolife、状態ファイル）
-  lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）、位置のラベル
+  lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）、位置のラベル、
+                    府県（地区）からの並びの推定（guess_formation）
+  predict.py        予想（Plackett–Luce。特徴、学習、1着・2着以内・3着以内の確率、評価）。docs/prediction.md
   notify.py         注目選手の出走通知（watchlist.toml の照合、Discord の Webhook、送信済みの記録）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
   viewer.py         出走表ビューア（Streamlit）。並びの図（車番の色、ラインごと、競りは縦に重ねる）、
-                    「出走表」タブ（補正得点、ライン、位置＝先頭／番手／単騎、競り）、「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
+                    「出走表」タブ（補正得点、ライン、位置＝先頭／番手／単騎、競り）、「予想」タブ（1着・2着以内・3着以内の確率）、
+                    「結果」タブ（着順、着差、上がり、決まり手、得点順位、払戻金）
                     並びは、当日は keirin.jp の最新の nInfo、なければ収集済みの raw/lines を使う
 tests/              pytest（conftest.py に架空の API レスポンスがある）
 docs/               API 調査メモ、データスキーマ
@@ -194,6 +202,11 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - 2026-10-05 ライン（並び）は、過去分をオッズパーク、これから先を keirin.jp から取る（オーナー判断）。
   オッズパークは robots.txt の Crawl-delay（10秒）を守り、Actions で1回50分まで少しずつ取る（オーナー選択）。
   オッズパークのサイトポリシーは、私的使用以外の複製、**引用**、頒布を禁止しているので、記事には並び予想や短評を載せない（自分たちで集計した統計だけ）。
+- 2026-10-05 予想（1着・3着以内の確率）をビューアの「予想」タブに入れた（オーナーの要望）。
+  - モデルは Plackett–Luce。級班（S・A・L）ごとに学習し、ライン効果は1着と2・3着で分ける。過去の並びがまだないので、学習では府県（地区）から推定した並びを使う。
+  - 学習はビューアの起動時（データが更新されたとき）に、直近 120 日のデータで行ってキャッシュする（今は約3秒）。Actions は使わない（minutes に余裕がないため）。依存に scipy を追加した。
+  - ガールズはラインがないので、全員を単騎として扱う（並びを推定しない）。
+  - 過去の日の予想は、その日も学習に入っているので参考値（画面に明示）。精度の確認は `keirin predict-eval`（前日までで学習）で行う。
 - 2026-10-04 1回あたりの収集日数を10日から15日に増やした（オーナー判断）。JSJ002 で1日のリクエストが減ったので、1回あたりのアクセス量は以前と同じくらい。backfill は11月上旬から10/24ごろに前倒し。
 - 2026-10-04 出走表の取得を JSJ002（開催ごとに1回）に切り替えた（オーナー承認）。サイトへのアクセスが約4割減る。GitHub 調査で知り、自分たちで確かめた。
   並び（ライン）の収集は、ほかの投票サイトからも取れるので急がない（オーナー判断）。
@@ -252,4 +265,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [ ] Streamlit Community Cloud へのデプロイ（オーナーがアプリを作成する。手順は docs/deploy-streamlit.md）
 - [ ] 2026-10 下旬: `estimate-deltas --boundary 2026-07-01` で Δ を推定し直して `score.STEP_DELTAS` を更新する。`evaluate` で 9月分を検証する
 - [ ] 期が替わるごと（1月・7月）に Δ を再推定する（4月・10月の下旬）
+- [x] 予想タブ（2026-10-05。docs/prediction.md）
+- [ ] 予想の改良: ラインの連動（主導権を取るラインを先に決める2段階モデル）、補正得点・レーティング・当所成績を特徴に入れる
+- [ ] 2026-10-12 ごろ: 10/5〜10/11 が収集されたら `predict-eval --date 2026-10-05 --to 2026-10-11` で予想を確かめ直す（9/28〜10/4 は特徴を決めるときに見たので、評価がやや甘い）
+- [ ] 10/24 ごろ（backfill の完了後）: 予想の学習期間（120 日）を見直す
+- [ ] 2027-01 ごろ（オッズパークの並びがそろったら）: 本物の並びで予想を学習し直して、推定の並びとの差を評価する
 - [ ] オーナーから機能の要望を受けたら、ここに追記する

@@ -18,6 +18,8 @@ from keirin.storage import table_path
 log = logging.getLogger(__name__)
 
 Row = dict[str, Any]
+# Card counts passed on for the prediction (決まり手, B / H / S).
+COUNTS = ("nige", "makuri", "sashi", "mark", "back", "home", "start")
 
 
 class ApiClient(Protocol):
@@ -254,7 +256,21 @@ class Store:
         )
         if card is None:
             card = self._live("JSJ006", encp=self._race_token(meeting, race_no))
-        return card_entries(card, summary)
+        # Scratched riders stay on the card, marked "(欠場)" in the list or on the card.
+        scratched = {
+            _int(s.get("syaban"))
+            for s in (summary or {}).get("sInfo") or []
+            if "欠" in (s.get("assen") or "")
+        } | {
+            _int(s.get("syaban"))
+            for s in card.get("sensyuTypeInfo") or []
+            if "欠" in (s.get("ketujyouTuikaHojyu") or "")
+        }
+        rows = card_entries(card, summary)
+        for row in rows:
+            if row["car_no"] in scratched:
+                row["notes"] = "欠場"
+        return rows
 
     def _race_token(self, meeting: Row, race_no: int) -> str:
         # The meeting header lists the race tokens in race order, also for upcoming days
@@ -302,6 +318,7 @@ class Store:
             "win_rate": _num(entry.get("win_rate")),
             "top2_rate": _num(entry.get("top2_rate")),
             "top3_rate": _num(entry.get("top3_rate")),
+            **{k: _int(entry.get(k)) for k in COUNTS},
             "finish": entry.get("finish") or "",
             "notes": entry.get("notes") or "",
         }
