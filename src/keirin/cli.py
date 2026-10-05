@@ -5,14 +5,16 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import math
 import os
 import sys
+from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
 
-from keirin import analysis, github_commit, hatena, lines, notify, rating, storage
+from keirin import analysis, github_commit, hatena, lines, notify, predict, rating, storage
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
@@ -141,6 +143,38 @@ def cmd_rating(args: argparse.Namespace) -> int:
                 f"theta={t:+.3f} score_eq={fitted.score_equivalent(r, maps)} "
                 f"official={card.get('score', '')} races={fitted.weight[r]:.1f}"
             )
+    return 0
+
+
+def cmd_predict_eval(args: argparse.Namespace) -> int:
+    train = predict.load_races(args.data_dir, end=args.date)
+    test = predict.load_races(args.data_dir, start=args.date, end=args.to + timedelta(days=1))
+    model = predict.fit(train, min_races=args.min_races)
+    if not model.params:
+        log.error("not enough races before %s to fit a model", args.date)
+        return 1
+    baseline = predict.fit(train, min_races=args.min_races, columns=("score", "no_score"))
+    trained = ", ".join(f"{g}={n}" for g, n in model.races.items())
+    print(f"fitted on {model.first_day}..{model.last_day}: {trained} races")
+    uniform: dict[str, list[float]] = defaultdict(list)
+    for race in test:
+        if race.group in model.params:
+            for group in (race.group, "all"):
+                uniform[group].append(math.log(len(race.x)))
+    results, scores = predict.evaluate(model, test), predict.evaluate(baseline, test)
+    print("group races  log-loss: model score uniform  brier-top3: model score")
+    for group in sorted(results, key=lambda g: (g == "all", g)):
+        e, b = results[group], scores[group]
+        flat = sum(uniform[group]) / len(uniform[group])
+        print(
+            f"{group:5s} {e.races:5d}  {e.log_loss:.4f} {b.log_loss:.4f} {flat:.4f}  "
+            f"{e.brier_top3:.4f} {b.brier_top3:.4f}"
+        )
+    for group in sorted(g for g in results if g != "all"):
+        for name, bins in (("win", results[group].win_bins), ("top3", results[group].top3_bins)):
+            print(f"calibration {group} {name}: predicted -> observed (riders)")
+            for b in bins:
+                print(f"  {b.lo:.2f}-{b.hi:.2f}  {b.predicted:.3f} -> {b.observed:.3f}  ({b.n})")
     return 0
 
 
@@ -296,6 +330,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-races", type=float, default=3.0)
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_rating)
+
+    p = sub.add_parser(
+        "predict-eval", help="fit the prediction model on earlier days and score a period"
+    )
+    p.add_argument(
+        "--date", type=date.fromisoformat, required=True, help="first day (fit on the days before)"
+    )
+    p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_predict_eval)
 
     p = sub.add_parser("estimate-deltas", help="estimate tier deltas from a class change")
     p.add_argument("--boundary", type=date.fromisoformat, required=True, help="e.g. 2026-07-01")
