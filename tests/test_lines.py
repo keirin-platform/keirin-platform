@@ -69,6 +69,61 @@ def test_rows():
     assert {r["formation"] for r in rows} == {"2(13)56/74"}
 
 
+def rider(car, pref, style, score=80.0, back=0):
+    return {"car_no": car, "prefecture": pref, "style": style, "score": score, "back": back}
+
+
+def test_guess_formation_groups_riders_of_a_region_behind_its_leader():
+    riders = [
+        rider(1, "宮城", "逃", 85.0, back=5),
+        rider(2, "福島", "追", 84.0),
+        rider(3, "愛媛", "逃", 83.0, back=3),
+        rider(4, "高知", "追", 81.0),
+        rider(5, "岡山", "追", 82.0),  # 中国 and 四国 line up together
+        rider(6, "東京", "両", 80.0, back=2),  # alone, but able to lead: 単騎
+        rider(7, "千葉", "逃", 79.0, back=4),
+    ]
+    assert lines.guess_formation(riders).text() == "12/354/6/7"
+
+
+def test_guess_formation_leader_is_the_most_front_running_rider():
+    riders = [
+        rider(1, "静岡", "逃", 90.0, back=2),
+        rider(2, "神奈川", "逃", 85.0, back=9),
+        rider(3, "千葉", "両", 95.0, back=20),
+    ]
+    # 逃 before 両, then the one with more B leads; the others follow by score.
+    assert lines.guess_formation(riders).text() == "231"
+
+
+def test_guess_formation_lone_chasers_join_a_line_of_the_same_side():
+    riders = [
+        rider(1, "福岡", "逃", 90.0),
+        rider(2, "熊本", "追", 88.0),
+        rider(3, "愛媛", "追", 87.0),  # 西: joins the 九州 line
+        rider(4, "大阪", "逃", 86.0),
+        rider(5, "愛知", "追", 85.0),  # 中: joins the 近畿 rider
+        rider(6, "埼玉", "追", 84.0),  # 東: no line of that side, stays alone
+    ]
+    assert lines.guess_formation(riders).text() == "123/45/6"
+
+
+def test_guess_formation_does_not_grow_a_line_beyond_four():
+    riders = [
+        rider(1, "福岡", "逃", 90.0),
+        rider(2, "佐賀", "追", 89.0),
+        rider(3, "熊本", "追", 88.0),
+        rider(4, "長崎", "追", 87.0),
+        rider(5, "愛媛", "追", 86.0),
+    ]
+    assert lines.guess_formation(riders).text() == "1234/5"
+
+
+def test_guess_formation_handles_unknown_values():
+    riders = [rider(1, "", "", None, None), rider(2, "東京", "逃", None, None)]
+    assert lines.guess_formation(riders).text() == "1/2"
+
+
 class FakeKeirin:
     def __init__(self, ninfo_by_race):
         self.ninfo_by_race = ninfo_by_race

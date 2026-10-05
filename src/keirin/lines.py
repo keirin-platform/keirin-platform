@@ -156,6 +156,68 @@ def formation_of(capture: dict[str, Any]) -> Formation | None:
     return None
 
 
+# Regions (地区) riders line up by. 中国 and 四国 usually line up together.
+REGIONS = {
+    pref: region
+    for region, prefs in {
+        "北日本": "北海道 青森 岩手 宮城 秋田 山形 福島",
+        "関東": "茨城 栃木 群馬 埼玉 東京 新潟 長野 山梨",
+        "南関東": "千葉 神奈川 静岡",
+        "中部": "富山 石川 福井 岐阜 愛知 三重",
+        "近畿": "滋賀 京都 大阪 兵庫 奈良 和歌山",
+        "中四国": "鳥取 島根 岡山 広島 山口 徳島 香川 愛媛 高知",
+        "九州": "福岡 佐賀 長崎 熊本 大分 宮崎 鹿児島 沖縄",
+    }.items()
+    for pref in prefs.split()
+}
+# A lone chaser joins a line from the same side of the country.
+SIDES = {
+    "北日本": "東", "関東": "東", "南関東": "東",
+    "中部": "中", "近畿": "中",
+    "中四国": "西", "九州": "西",
+}  # fmt: skip
+_STYLE_ORDER = {"逃": 0, "両": 1, "追": 2}
+
+
+def guess_formation(riders: list[dict[str, Any]]) -> Formation:
+    """Lines guessed from regions and styles, for races whose formation is unknown.
+
+    Riders of a region form a line led by the most front-running one (逃 > 両 > 追,
+    then more B), the others following by score. A chaser alone in a region joins the
+    shortest line of the same side (at most 4 riders), else stays alone (単騎).
+    `riders`: dicts with car_no, prefecture, style, score and back.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in riders:
+        groups.setdefault(REGIONS.get(r["prefecture"]) or f"?{r['car_no']}", []).append(r)
+    built = []
+    for members in groups.values():
+        head = min(
+            members,
+            key=lambda r: (_STYLE_ORDER.get(r["style"], 3), -(r["back"] or 0), r["car_no"]),
+        )
+        rest = sorted(
+            (r for r in members if r is not head), key=lambda r: (-(r["score"] or 0), r["car_no"])
+        )
+        built.append([head, *rest])
+    built.sort(key=lambda line: line[0]["car_no"])
+    lines = [line for line in built if not (len(line) == 1 and line[0]["style"] == "追")]
+    for line in built:
+        if len(line) == 1 and line[0]["style"] == "追":
+            side = SIDES.get(REGIONS.get(line[0]["prefecture"], ""))
+            joinable = [
+                other for other in lines
+                if side and SIDES.get(REGIONS.get(other[0]["prefecture"], "")) == side
+                and len(other) < 4
+            ]  # fmt: skip
+            if joinable:
+                min(joinable, key=lambda other: (len(other), other[0]["car_no"])).append(line[0])
+            else:
+                lines.append(line)
+    lines.sort(key=lambda line: line[0]["car_no"])
+    return Formation(tuple(tuple((r["car_no"],) for r in line) for line in lines))
+
+
 # --- storage -------------------------------------------------------------------------
 
 
