@@ -1,3 +1,4 @@
+import math
 from datetime import date
 from pathlib import Path
 
@@ -19,6 +20,11 @@ def run_app(tmp_path, monkeypatch) -> AppTest:
     at.run()
     assert not at.exception, at.exception
     return at
+
+
+def frame_with(at: AppTest, column: str):
+    """The table that has `column` (tabs make the order of the tables a layout detail)."""
+    return next(d.value for d in at.dataframe if column in d.value.columns)
 
 
 def test_live_card_shows_corrected_score(tmp_path, monkeypatch):
@@ -68,10 +74,10 @@ def test_result_tab(tmp_path, monkeypatch):
 
     monkeypatch.setenv("KEIRIN_TEST_FINISHED", "1")
     at = run_app(tmp_path, monkeypatch)
-    order = at.dataframe[1].value
+    order = frame_with(at, "決まり手")
     assert list(order["車"]) == [2, 1, 3]  # finishers first, the disqualified rider last
     assert list(order["決まり手"])[:2] == ["差し", "逃げ"]
-    payouts = at.dataframe[2].value
+    payouts = frame_with(at, "払戻金")
     assert list(payouts["払戻金"]) == ["1,230円", "150円", "320円"]
     assert any("天候 晴" in m.value for m in at.markdown)
 
@@ -97,3 +103,47 @@ def test_formation_is_shown(tmp_path, monkeypatch):
     frame = at.dataframe[0].value
     # "2 / (13)": car 2 alone, cars 1 and 3 contest the head of the other line.
     assert list(frame.sort_values("車")["位置"]) == ["先頭（競り）", "単騎", "先頭（競り）"]
+
+
+def prediction_frame(at: AppTest):
+    return frame_with(at, "1着")
+
+
+def test_prediction_tab(tmp_path, monkeypatch):
+    at = run_app(tmp_path, monkeypatch)
+    frame = prediction_frame(at)
+    assert list(frame.columns) == ["車", "選手", "位置", "競走得点", "1着", "2着以内", "3着以内"]
+    # The test model weighs the score only: 90.25 / 90.25 / none (87.25) -> 1 / 1 / -2.
+    e = math.e
+    assert list(frame["車"]) == [1, 2, 3]  # most likely winner first
+    assert list(frame["1着"]) == pytest.approx(
+        [100 * e / (2 * e + e**-2), 100 * e / (2 * e + e**-2), 100 * e**-2 / (2 * e + e**-2)]
+    )
+    assert list(frame["3着以内"]) == pytest.approx([100, 100, 100])
+    # No formation published: lines are guessed (three regions, so everyone alone).
+    assert list(frame["位置"]) == ["単騎", "単騎", "単騎"]
+    assert any("府県" in c.value for c in at.caption)
+
+
+def test_prediction_uses_the_published_formation(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEIRIN_TEST_NINFO", "1")
+    at = run_app(tmp_path, monkeypatch)
+    frame = prediction_frame(at)
+    assert dict(zip(frame["車"], frame["位置"], strict=True)) == {
+        1: "先頭（競り）", 2: "単騎", 3: "先頭（競り）",
+    }  # fmt: skip
+    assert not any("府県" in c.value for c in at.caption)
+
+
+def test_prediction_shows_the_finish_after_the_race(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEIRIN_TEST_FINISHED", "1")
+    at = run_app(tmp_path, monkeypatch)
+    frame = prediction_frame(at)
+    assert dict(zip(frame["車"], frame["着"], strict=True)) == {1: "2", 2: "1", 3: "失"}
+
+
+def test_prediction_without_a_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEIRIN_TEST_NO_MODEL", "1")
+    at = run_app(tmp_path, monkeypatch)
+    assert not any("1着" in d.value.columns for d in at.dataframe)
+    assert any("予想" in i.value for i in at.info)
