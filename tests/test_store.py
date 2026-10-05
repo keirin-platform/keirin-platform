@@ -50,6 +50,30 @@ def test_live_meeting_races_and_corrected_card(tmp_path, live_client):
     assert ("JSJ014", {"encp": MEETING_ENC}) not in live_client.calls
 
 
+def test_card_rows_carry_the_counts_the_prediction_needs(tmp_path, live_client):
+    _, _, rows = Store(tmp_path, live_client).card(D, "99", 1)
+    first = rows[0]
+    assert (first["nige"], first["makuri"], first["sashi"], first["mark"]) == (3, 1, 0, 2)
+    assert (first["back"], first["home"], first["start"]) == (4, 1, 2)
+
+
+def test_collected_card_rows_carry_the_counts_too(tmp_path):
+    storage.write_tables(tmp_path, D, parse_bundle(fetch_day(FakeClient(), D)))
+    _, _, rows = Store(tmp_path, None).card(D, "99", 1)
+    assert (rows[0]["back"], rows[0]["mark"]) == (4, 2)
+
+
+@pytest.mark.parametrize("where", ["list", "card"])
+def test_live_card_marks_scratched_riders(tmp_path, live_client, where):
+    if where == "list":  # 出走表一覧 (JSJ017)
+        live_client.responses[("JSJ017", MEETING_ENC)]["rInfo"][0]["sInfo"][1]["assen"] = "(欠場)"
+    else:  # 出走表 (JSJ002 / JSJ006)
+        card = live_client.responses[("JSJ006", race_enc(1))]["sensyuTypeInfo"][1]
+        card["ketujyouTuikaHojyu"] = "(欠場)"
+    _, _, rows = Store(tmp_path, live_client).card(D, "99", 1)
+    assert [r["notes"] for r in rows] == ["", "欠場", ""]
+
+
 def test_race_token_falls_back_to_jsj014(tmp_path):
     client = FakeClient()  # header without race tokens
     client.responses[("JSJ014", MEETING_ENC)] = {
