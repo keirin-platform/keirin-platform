@@ -108,6 +108,16 @@ def test_guess_formation_lone_chasers_join_a_line_of_the_same_side():
     assert lines.guess_formation(riders).text() == "123/45/6"
 
 
+def test_guess_formation_lone_chasers_of_a_side_line_up_together():
+    # No line of their side to join: the two 東 chasers form a line of their own.
+    riders = [
+        rider(1, "福岡", "逃", 90.0),
+        rider(2, "埼玉", "追", 88.0),
+        rider(3, "千葉", "追", 86.0),
+    ]
+    assert lines.guess_formation(riders).text() == "1/23"
+
+
 def test_guess_formation_does_not_grow_a_line_beyond_four():
     riders = [
         rider(1, "福岡", "逃", 90.0),

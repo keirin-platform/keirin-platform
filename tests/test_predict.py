@@ -145,7 +145,7 @@ def test_probabilities_of_four_riders():
 def test_second_stage_temperature_flattens_the_second_place():
     x = matrix(4, score=[LN2, 0, 0, 0])
     p = predict.race_probabilities(params(b_score=1.0, t2=0.5), x)
-    # P(1 second) = 0.6 * sqrt(2) / (sqrt(2) + 3) instead of 0.6 * 2 / 4
+    # P(1 second) = 0.6 * sqrt(2) / (sqrt(2) + 2) instead of 0.6 * 2 / 4
     assert p[0, 1] == pytest.approx(0.4 + 0.6 * math.sqrt(2) / (math.sqrt(2) + 2))
 
 
@@ -294,8 +294,36 @@ def test_load_races_from_tables(tmp_path):
     assert first[0, COL["second"]] == 1 and first[1, COL["second"]] == 0  # from the lines table
     # race 2 has no captured formation: guessed (all 東京 chasers; car 1 leads, then by score)
     assert loaded[1].x[:, COL["second"]].tolist() == [0, 1, 0]
+    # girls' races have no lines, whatever the regions say
+    assert loaded[2].x[:, COL["solo"]].tolist() == [1, 1, 1]
     assert all(r.day == day for r in loaded)
     assert len(predict.load_races(tmp_path, start=date(2026, 9, 2))) == 1
+
+
+def test_load_races_closes_the_gap_left_by_a_scratched_rider(tmp_path):
+    rows = [full_card(1, 90.0, 1, style="逃"), full_card(2, 88.0, None, notes="欠場"),
+            full_card(3, 86.0, 2), full_card(4, 84.0, 3)]  # fmt: skip
+    # Captured before the scratch: 123/4.
+    formation = [
+        {"venue_code": "11", "race_no": 1, "car_no": c, "line_no": ln, "line_pos": lp,
+         "line_size": ls, "contested": False, "formation": "123/4", "source": "keirin.jp"}
+        for c, ln, lp, ls in ((1, 1, 1, 3), (2, 1, 2, 3), (3, 1, 3, 3), (4, 2, 1, 1))
+    ]  # fmt: skip
+    write_day(tmp_path, date(2026, 9, 1), {("11", 1): ("Ａ級一般", rows)}, formation)
+    [race] = predict.load_races(tmp_path)
+    # cars 1, 3, 4: car 3 moves up behind car 1, in a line of two
+    assert race.x[:, COL["second"]].tolist() == [0, 1, 0]
+    assert race.x[:, COL["third_plus"]].tolist() == [0, 0, 0]
+    assert race.x[:, COL["head_size"]].tolist() == [0, 0, 0]
+
+
+def test_recent_start(tmp_path):
+    from keirin.timeutil import date_range
+
+    for day in date_range(date(2026, 9, 1), date(2026, 9, 10)):
+        write_day(tmp_path, day, {})
+    assert predict.recent_start(tmp_path, days=3) == date(2026, 9, 8)
+    assert predict.recent_start(tmp_path / "empty", days=3) is None
 
 
 # --- evaluation ------------------------------------------------------------------------
@@ -311,6 +339,8 @@ def test_evaluate_scores_the_predictions():
     # (0.25 + 0.0625 + 0.0625) + (0.25 + 0.5625 + 0.0625) over 6 riders
     assert result["A"].brier_win == pytest.approx(1.25 / 6)
     assert result["A"].brier_top3 == pytest.approx(0.0)
+    # top 2: 5/6, 7/12, 7/12; both races put rows 0 and 1 in the top 2
+    assert result["A"].brier_top2 == pytest.approx(2 * (1 / 36 + 25 / 144 + 49 / 144) / 6)
     assert result["all"].races == 2
     win = {b.lo: b for b in result["A"].win_bins}
     assert (win[0.45].n, win[0.45].predicted, win[0.45].observed) == (2, 0.5, 0.5)
@@ -347,6 +377,48 @@ def test_predict_race_leaves_out_scratched_riders_and_closes_the_line():
     # scores 90 / 88 / 86 -> utilities 2 / 0 / -2
     e = np.exp([2.0, 0.0, -2.0])
     np.testing.assert_allclose(pred.probs[:, 0], e / e.sum())
+
+
+def test_predict_race_drops_the_contest_of_a_scratched_rider():
+    model = Model({"A": params(b_score=1.0)}, {"A": 1}, None, None)
+    rows = [card(1, score=90.0, style="逃"), card(2, score=88.0), card(3, score=86.0, notes="欠場")]
+    by_car = {
+        1: {"line_no": 1, "line_pos": 1, "line_size": 3, "contested": False},
+        2: {"line_no": 1, "line_pos": 2, "line_size": 3, "contested": True},
+        3: {"line_no": 1, "line_pos": 2, "line_size": 3, "contested": True},
+    }
+    pred = predict.predict_race(model, "Ａ級一般", rows, by_car)
+    assert pred.by_car[2] == {"line_no": 1, "line_pos": 2, "line_size": 2, "contested": False}
+
+
+def test_predict_race_counts_riders_missing_from_the_formation_as_alone():
+    model = Model({"A": params(b_score=1.0)}, {"A": 1}, None, None)
+    rows = [card(1, score=90.0), card(2, score=88.0), card(3, score=86.0)]
+    by_car = {
+        1: {"line_no": 1, "line_pos": 1, "line_size": 2, "contested": False},
+        2: {"line_no": 1, "line_pos": 2, "line_size": 2, "contested": False},
+    }
+    pred = predict.predict_race(model, "Ａ級一般", rows, by_car)
+    assert pred.by_car[3]["line_size"] == 1
+    assert pred.by_car[3]["line_no"] not in (pred.by_car[1]["line_no"], None)
+
+
+def test_predict_race_of_girls_has_no_lines():
+    model = Model({"L": params(b_score=1.0)}, {"L": 1}, None, None)
+    rows = [
+        card(1, score=52.0, style="逃", prefecture="福岡"),
+        card(2, score=51.0, prefecture="熊本"),
+        card(3, score=50.0, prefecture="佐賀"),
+    ]
+    pred = predict.predict_race(model, "Ｌ級ガ予", rows, None)
+    assert not pred.guessed
+    assert {c: info["line_size"] for c, info in pred.by_car.items()} == {1: 1, 2: 1, 3: 1}
+
+
+def test_predict_race_lists_riders_without_a_score():
+    model = Model({"A": params(b_score=1.0)}, {"A": 1}, None, None)
+    rows = [card(1, score=90.0), card(2, score=0.0), card(3)]
+    assert predict.predict_race(model, "Ａ級一般", rows, None).no_score == [2, 3]
 
 
 def test_predict_race_guesses_an_unknown_formation():
@@ -405,6 +477,19 @@ def test_predict_eval_command(tmp_path, capsys):
     assert races == 3
     assert uniform_loss == pytest.approx(math.log(5), abs=1e-3)
     assert model_loss < uniform_loss
+
+
+def test_predict_eval_trains_on_the_recent_days(tmp_path, capsys):
+    from keirin import cli
+    from keirin.timeutil import date_range
+
+    write_simple_days(tmp_path, list(date_range(date(2026, 9, 1), date(2026, 9, 11))))
+    code = cli.main(
+        ["predict-eval", "--date", "2026-09-11", "--to", "2026-09-11", "--days", "5",
+         "--data-dir", str(tmp_path), "--min-races", "10"]
+    )  # fmt: skip
+    assert code == 0
+    assert "2026-09-06..2026-09-10" in capsys.readouterr().out
 
 
 def test_predict_eval_without_training_data(tmp_path, capsys):

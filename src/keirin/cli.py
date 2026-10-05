@@ -147,7 +147,8 @@ def cmd_rating(args: argparse.Namespace) -> int:
 
 
 def cmd_predict_eval(args: argparse.Namespace) -> int:
-    train = predict.load_races(args.data_dir, end=args.date)
+    start = args.date - timedelta(days=args.days)  # the same window as the viewer
+    train = predict.load_races(args.data_dir, start=start, end=args.date)
     test = predict.load_races(args.data_dir, start=args.date, end=args.to + timedelta(days=1))
     model = predict.fit(train, min_races=args.min_races)
     if not model.params:
@@ -162,13 +163,13 @@ def cmd_predict_eval(args: argparse.Namespace) -> int:
             for group in (race.group, "all"):
                 uniform[group].append(math.log(len(race.x)))
     results, scores = predict.evaluate(model, test), predict.evaluate(baseline, test)
-    print("group races  log-loss: model score uniform  brier-top3: model score")
+    print("group races  log-loss: model score uniform  brier-top3: model score  top2: model score")
     for group in sorted(results, key=lambda g: (g == "all", g)):
         e, b = results[group], scores[group]
         flat = sum(uniform[group]) / len(uniform[group])
         print(
             f"{group:5s} {e.races:5d}  {e.log_loss:.4f} {b.log_loss:.4f} {flat:.4f}  "
-            f"{e.brier_top3:.4f} {b.brier_top3:.4f}"
+            f"{e.brier_top3:.4f} {b.brier_top3:.4f}  {e.brier_top2:.4f} {b.brier_top2:.4f}"
         )
     for group in sorted(g for g in results if g != "all"):
         for name, bins in (("win", results[group].win_bins), ("top3", results[group].top3_bins)):
@@ -338,6 +339,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--date", type=date.fromisoformat, required=True, help="first day (fit on the days before)"
     )
     p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument(
+        "--days",
+        type=int,
+        default=predict.TRAINING_DAYS,
+        help="fit on this many days before --date (default: the viewer's window)",
+    )
     p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_predict_eval)

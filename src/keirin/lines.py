@@ -184,7 +184,8 @@ def guess_formation(riders: list[dict[str, Any]]) -> Formation:
 
     Riders of a region form a line led by the most front-running one (逃 > 両 > 追,
     then more B), the others following by score. A chaser alone in a region joins the
-    shortest line of the same side (at most 4 riders), else stays alone (単騎).
+    shortest line of the same side (at most 4 riders); chasers of a side that find none
+    line up with each other, and the last one left rides alone (単騎).
     `riders`: dicts with car_no, prefecture, style, score and back.
     """
     groups: dict[str, list[dict[str, Any]]] = {}

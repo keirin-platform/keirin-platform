@@ -11,17 +11,19 @@ temperatures t2 and t3, since lower places are more random.
 
 S級, A級 and L級 (girls) are fitted separately. Training uses a race's captured
 formation (tables/lines) when there is one, and otherwise guesses it from the
-riders' regions (`lines.guess_formation`).
+riders' regions (`lines.guess_formation`). Girls' keirin has no lines: every
+rider of an L級 race rides alone.
 """
 
 from __future__ import annotations
 
 import csv
+import logging
 import math
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,8 @@ from scipy.special import logsumexp
 
 from keirin.lines import Formation, guess_formation
 from keirin.storage import table_path
+
+log = logging.getLogger(__name__)
 
 CARD_FEATURES = (
     "score",  # race score minus the race average (missing: 3 below the lowest)
@@ -62,6 +66,7 @@ K = KC + KL
 N_PARAMS = K + KL + 2  # beta, gamma1, gamma23, log t2, log t3
 MIN_RACES = 100
 L2 = 1e-3
+TRAINING_DAYS = 120  # the viewer fits on the latest collected days only (fit time)
 
 
 def group_of(race_class: str | None) -> str | None:
@@ -177,8 +182,19 @@ def _close_gaps(by_car: dict[int, dict[str, Any]], scratched: set[int]) -> dict[
                 "line_no": line_no,
                 "line_pos": positions.index(pos) + 1,
                 "line_size": len(cars),
-                "contested": by_car[car].get("contested", False),
+                "contested": sum(p == pos for p, _ in cars) > 1,
             }
+    return out
+
+
+def _alone(by_car: dict[int, dict[str, Any]], cars: list[int]) -> dict[int, dict[str, Any]]:
+    """`by_car` with every rider it misses riding alone (in a line of their own)."""
+    out = dict(by_car)
+    line_no = max((int(info["line_no"]) for info in by_car.values()), default=0)
+    for car in cars:
+        if car not in out:
+            line_no += 1
+            out[car] = {"line_no": line_no, "line_pos": 1, "line_size": 1, "contested": False}
     return out
 
 
@@ -312,6 +328,8 @@ def fit(
         result = minimize(
             _objective, np.zeros(N_PARAMS), args=(x, mask, order, l2), jac=True, method="L-BFGS-B"
         )
+        if not result.success:
+            log.warning("%s: the fit did not converge (%s)", group, result.message)
         theta = result.x
         if keep is not None:
             theta[:KC][~keep[:KC]] = 0.0
@@ -330,6 +348,12 @@ def _read(path: Path) -> list[dict[str, str]]:
         return []
     with path.open(encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def recent_start(data_dir: Path, days: int) -> date | None:
+    """First day of the latest `days` days of collected data (None without data)."""
+    files = sorted((data_dir / "tables" / "entries").glob("*/*.csv"))
+    return date.fromisoformat(files[-1].stem) - timedelta(days=days - 1) if files else None
 
 
 def load_races(data_dir: Path, start: date | None = None, end: date | None = None) -> list[Race]:
@@ -358,6 +382,7 @@ def load_races(data_dir: Path, start: date | None = None, end: date | None = Non
             riders = [r for r in races[key] if not _scratched(r)]
             if group is None or len(riders) < 3 or any(r["score"] == "" for r in riders):
                 continue
+            scratched = {int(r["car_no"]) for r in races[key] if _scratched(r)}
             placed = sorted(
                 (int(r["finish_pos"]), int(r["car_no"]), i)
                 for i, r in enumerate(riders)
@@ -365,9 +390,12 @@ def load_races(data_dir: Path, start: date | None = None, end: date | None = Non
             )
             if len(placed) < 3:
                 continue
-            by_car = formations.get(key) or _by_car(
-                guess_formation([_guess_input(r) for r in riders])
-            )
+            if group == "L":
+                by_car = {}  # no lines in girls' keirin
+            elif key in formations:
+                by_car = _close_gaps(formations[key], scratched)
+            else:
+                by_car = _by_car(guess_formation([_guess_input(r) for r in riders]))
             order = tuple(i for _, _, i in placed[:3])
             out.append(Race(group, feature_matrix(riders, by_car), order, day))
     return out
@@ -393,6 +421,7 @@ class Evaluation:
     races: int
     log_loss: float  # mean -log P(winner)
     brier_win: float  # mean over riders of (P(win) - won)^2
+    brier_top2: float
     brier_top3: float
     win_bins: list[Bin]
     top3_bins: list[Bin]
@@ -416,24 +445,29 @@ def evaluate(model: Model, races: list[Race]) -> dict[str, Evaluation]:
         p = model.probabilities(race.group, race.x)
         if p is None:
             continue
-        won, top3 = np.zeros(len(race.x)), np.zeros(len(race.x))
+        won, top2, top3 = (np.zeros(len(race.x)) for _ in range(3))
         won[race.order[0]] = 1
+        top2[list(race.order[:2])] = 1
         top3[list(race.order[:3])] = 1
         for group in (race.group, "all"):
             part = parts[group]
             part["loss"].append(-math.log(max(p[race.order[0], 0], 1e-12)))
             part["p1"].append(p[:, 0])
             part["y1"].append(won)
+            part["p2"].append(p[:, 1])
+            part["y2"].append(top2)
             part["p3"].append(p[:, 2])
             part["y3"].append(top3)
     result = {}
     for group, part in parts.items():
         p1, y1 = np.concatenate(part["p1"]), np.concatenate(part["y1"])
+        p2, y2 = np.concatenate(part["p2"]), np.concatenate(part["y2"])
         p3, y3 = np.concatenate(part["p3"]), np.concatenate(part["y3"])
         result[group] = Evaluation(
             races=len(part["loss"]),
             log_loss=float(np.mean(part["loss"])),
             brier_win=float(np.mean((p1 - y1) ** 2)),
+            brier_top2=float(np.mean((p2 - y2) ** 2)),
             brier_top3=float(np.mean((p3 - y3) ** 2)),
             win_bins=_bins(p1, y1, WIN_EDGES),
             top3_bins=_bins(p3, y3, TOP3_EDGES),
@@ -449,9 +483,10 @@ class Prediction:
     group: str
     cars: list[int]
     probs: np.ndarray  # (riders, 3): win, top 2, top 3
-    by_car: dict[int, dict[str, Any]]  # line positions used
+    by_car: dict[int, dict[str, Any]]  # line positions used (every rider)
     guessed: bool  # the formation was guessed from the regions
     scratched: list[int]
+    no_score: list[int]  # riders without a score (counted 3 below the lowest)
 
 
 def predict_race(
@@ -468,9 +503,14 @@ def predict_race(
     if len(riders) < 2:
         return None
     scratched = sorted(int(r["car_no"]) for r in rows if _scratched(r))
-    if by_car:
+    cars = [int(r["car_no"]) for r in riders]
+    if group == "L":
+        lines, guessed = {}, False  # no lines in girls' keirin
+    elif by_car:
         lines, guessed = _close_gaps({int(c): v for c, v in by_car.items()}, set(scratched)), False
     else:
         lines, guessed = _by_car(guess_formation([_guess_input(r) for r in riders])), True
+    lines = _alone(lines, cars)
     probs = model.probabilities(group, feature_matrix(riders, lines))
-    return Prediction(group, [int(r["car_no"]) for r in riders], probs, lines, guessed, scratched)
+    no_score = [c for c, r in zip(cars, riders, strict=True) if not (_num(r.get("score")) or 0) > 0]
+    return Prediction(group, cars, probs, lines, guessed, scratched, no_score)
