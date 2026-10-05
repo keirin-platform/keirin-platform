@@ -123,6 +123,7 @@ def test_prediction_tab(tmp_path, monkeypatch):
     # No formation published: lines are guessed (three regions, so everyone alone).
     assert list(frame["位置"]) == ["単騎", "単騎", "単騎"]
     assert any("府県" in c.value for c in at.caption)
+    assert any("得点のない選手" in c.value and "3番" in c.value for c in at.caption)
 
 
 def test_prediction_uses_the_published_formation(tmp_path, monkeypatch):
@@ -147,3 +148,10 @@ def test_prediction_without_a_model(tmp_path, monkeypatch):
     at = run_app(tmp_path, monkeypatch)
     assert not any("1着" in d.value.columns for d in at.dataframe)
     assert any("予想" in i.value for i in at.info)
+
+
+def test_prediction_model_failure_is_shown(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEIRIN_TEST_MODEL_FAILS", "1")
+    at = run_app(tmp_path, monkeypatch)  # no exception escapes
+    assert any("予想モデル" in e.value for e in at.error)
+    assert frame_with(at, "補正得点") is not None  # the card is still shown

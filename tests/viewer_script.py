@@ -40,8 +40,16 @@ params[CARD_FEATURES.index("score")] = 1.0
 model = (
     None if os.environ.get("KEIRIN_TEST_NO_MODEL") else Model({"A": params}, {"A": 1}, None, None)
 )
+
+
+def load_model():
+    if os.environ.get("KEIRIN_TEST_MODEL_FAILS"):
+        raise RuntimeError("fit failed")
+    return model
+
+
 render(
     Store(Path(os.environ["KEIRIN_TEST_DATA_DIR"]), CachedClient(client)),
     date(2026, 1, 10),
-    lambda: model,
+    load_model,
 )

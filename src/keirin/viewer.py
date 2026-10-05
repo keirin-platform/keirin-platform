@@ -33,6 +33,7 @@ TIME_SLOTS = {
     "morning": "モーニング",
 }
 GROUP_NAMES = {"S": "S級", "A": "A級", "L": "L級（ガールズ）"}
+log = logging.getLogger(__name__)
 UP_BG, DOWN_BG = (
     "background-color: rgba(46, 160, 67, .22)",
     "background-color: rgba(218, 54, 51, .2)",
@@ -54,7 +55,9 @@ def _store(data_dir: str, version: str) -> Store:
 
 @st.cache_resource(show_spinner="予想モデルを学習しています…")
 def _model(data_dir: str, version: str) -> predict.Model:
-    return predict.fit(predict.load_races(Path(data_dir)))
+    path = Path(data_dir)
+    start = predict.recent_start(path, predict.TRAINING_DAYS)
+    return predict.fit(predict.load_races(path, start=start))
 
 
 def _fetch[T](store: Store, day: date, what: str, fn: Callable[..., T], *args) -> T:
@@ -250,9 +253,7 @@ def render(
         else:
             _render_result(result, rows)
     with tab_prediction:  # last: the model may still have to be fitted
-        _render_prediction(
-            model() if model else None, race, rows, formation, result, store.is_collected(day)
-        )
+        _render_prediction(model, race, rows, formation, result, store.is_collected(day))
     st.caption("データ出典: KEIRIN.JP（個人利用）。補正得点と予想の確率は推定値です。")
 
 
@@ -374,13 +375,19 @@ def prediction_frame(
 
 
 def _render_prediction(
-    model: predict.Model | None,
+    load_model: Callable[[], predict.Model | None] | None,
     race: dict,
     rows: list[dict],
     formation: dict | None,
     result: dict | None,
     collected: bool,
 ) -> None:
+    try:
+        model = load_model() if load_model else None
+    except Exception:  # keep the rest of the page usable
+        log.exception("fitting the prediction model failed")
+        st.error("予想モデルを学習できませんでした。時間をおいて再読み込みしてください。")
+        return
     if model is None or not model.params:
         st.info("予想モデルを学習できるデータがまだありません。")
         return
@@ -389,7 +396,8 @@ def _render_prediction(
     )
     if prediction is None:
         st.info(
-            f"このレース（{race['race_class']}）は予想できません（学習データが足りない種別です）。"
+            f"このレース（{race['race_class']}）は予想できません"
+            "（学習したモデルのない種別か、出走が2人未満です）。"
         )
         return
     percent = {
@@ -407,18 +415,27 @@ def _render_prediction(
         if model.first_day and model.last_day
         else ""
     )
+    if prediction.group == "L":
+        lines = "ガールズはラインがないので、全員単騎として計算しています。"
+    elif prediction.guessed:
+        lines = "並びが未公開なので、府県（地区）から推定した並びで計算しています。"
+    else:
+        lines = "並びは上の並びで計算しています。"
     notes = [
         "Plackett–Luce モデル（出走表の成績と並び）による推定値。"
         f"学習: {period}{GROUP_NAMES[prediction.group]} {model.races[prediction.group]:,} レース。",
-        "並びが未公開なので、府県（地区）から推定した並びで計算しています。"
-        if prediction.guessed
-        else "並びは上の並びで計算しています。",
+        lines,
     ]
+    names = {r["car_no"]: r["racer_name"] for r in rows}
+
+    def cars(numbers: list[int]) -> str:
+        return "、".join(f"{c}番 {names.get(c, '')}" for c in numbers)
+
     if prediction.scratched:
-        names = {r["car_no"]: r["racer_name"] for r in rows}
+        notes.append(f"欠場（除いて計算）: {cars(prediction.scratched)}。")
+    if prediction.no_score:
         notes.append(
-            "欠場（除いて計算）: "
-            + "、".join(f"{c}番 {names.get(c, '')}" for c in prediction.scratched)
+            f"得点のない選手（{cars(prediction.no_score)}）は、最も低い得点より3点低いとして計算しています。"
         )
     if collected:
         notes.append("この日のレースも学習に入っているので、参考値です。")
