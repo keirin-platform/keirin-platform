@@ -4,11 +4,14 @@ name: collect
 
 on:
   schedule:
-    # 03:30 JST, after midnight races are settled. Each run keeps everything since
+    # GitHub delays scheduled runs by hours at busy times (3-8 hours seen on 2026-10-05/06),
+    # so the minutes are off the hour and the cheap line-only run has several slots.
+    # 03:47 JST, after midnight races are settled. Each run keeps everything since
     # `since` complete, fetching at most 15 missing days (newest first).
-    - cron: "30 18 * * *"
-    # 16:00 JST: line formations only, for meetings that publish them late (night / midnight).
-    - cron: "0 7 * * *"
+    - cron: "47 18 * * *"
+    # 11:13 / 15:13 / 18:13 JST: line formations only (today), for meetings that publish
+    # them late (night / midnight) and as backups when one slot is delayed past the races.
+    - cron: "13 2,6,9 * * *"
   workflow_dispatch:
     inputs:
       date:
@@ -58,7 +61,7 @@ jobs:
       # Keep everything since 2025-12-01 (covers the 2026-01 and 2026-07 class changes
       # for the race score analysis); filled 15 days per run, newest first.
       since: ${{ inputs.since || '2025-12-01' }}
-      lines_only: ${{ github.event.schedule == '0 7 * * *' || inputs.lines_only == true }}
+      lines_only: ${{ (github.event_name == 'schedule' && github.event.schedule != '47 18 * * *') || inputs.lines_only == true }}
       discord_test: ${{ inputs.discord_test == true }}
       code_ref: ${{ inputs.code_ref || 'main' }}
     secrets:
