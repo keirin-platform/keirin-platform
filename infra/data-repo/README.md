@@ -3,7 +3,7 @@
 Files in this directory are copied into the private data repository
 `keirin-platform/keirin-data`. Collected data lives only there.
 
-- `.github/workflows/collect.yml` — daily cron (03:30 JST) that calls the
+- `.github/workflows/collect.yml` — daily cron (03:47 JST, plus line-only runs at 11:13 / 15:13 / 18:13 JST) that calls the
   reusable workflow `keirin-platform/keirin-platform/.github/workflows/collect.yml@main`.
   Run it manually from the Actions tab with `date` / `to` to backfill a range.
 
