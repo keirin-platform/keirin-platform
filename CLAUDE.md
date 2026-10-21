@@ -79,6 +79,11 @@
    各場の公式 YouTube ライブを、ビューアの「マルチビュー」ページに最大4枠（2×2 固定）で並べる。設計と実装メモは [docs/multiview.md](docs/multiview.md)。
    - 音は自動で切り替えない（解説を聞きたいこともある。オーナー指定）。枠の大きさと位置も変えない（発走の遅れでタイミングが重なると煩わしい。オーナー指定）。
    - ノート PC が前提で、スマホは考慮しない（オーナー指定）。表示は最大4場で、場は自分で選ぶ（オーナー指定）。
+   - **公開版「競輪マルチビューアー」**（2026-10-21、オーナーの要望。ほかの競輪ファンに使ってもらい、記事のネタにもする）。
+     keirin.jp を一切使わず YouTube だけで動く静的ページで、Public リポジトリ `keirin-platform/keirin-multiviewer` の GitHub Pages
+     （<https://keirin-platform.github.io/keirin-multiviewer/>）に置く。発走予定からの強調や残り時間はない（締切・発走時刻は配信の画面に出ているので足りる。オーナー談）。
+     設計は [docs/superpowers/specs/2026-10-21-public-multiviewer-design.md](docs/superpowers/specs/2026-10-21-public-multiviewer-design.md)。
+     **記事からリンクしてよい**（「ビューアや Private リポジトリにはリンクしない」の例外。keirin.jp のデータを使わないため）。
 
 ## 構成
 
@@ -87,6 +92,8 @@ keirin-platform/keirin-platform (Public)   ← このリポジトリ。コード
   └─ .github/workflows/collect.yml          再利用可能ワークフロー（収集ロジック本体）
 keirin-platform/keirin-data (Private)      ← 収集データの置き場
 keirin-platform/keirin-blog (Private)      ← はてなブログの記事（blog-sync.yml を呼ぶ caller。docs/blog.md）
+keirin-platform/keirin-multiviewer (Public) ← 公開版マルチビュー（GitHub Pages）。Actions が `keirin public-streams` を
+                                             keirin-platform の SHA 固定で動かし、streams.json とページをデプロイする（キーは Secret）
 keirin-platform/.github (Public)           ← 組織のプロフィール（profile/README.md）。公開してよい内容だけを書く
                                              （Private リポジトリ、ビューアの URL、内部 API の詳細には触れない）
   └─ .github/workflows/collect.yml          上を呼ぶだけの薄い caller（cron は毎日 03:47 JST。並びだけの実行が 11:13・15:13・18:13 JST）
@@ -159,6 +166,7 @@ uv run keirin estimate-deltas --boundary 2026-07-01 --data-dir ../keirin-data   
 uv run keirin rating --as-of 2026-11-01 --top 20 --data-dir ../keirin-data              # レーティング上位
 uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --rating --data-dir ../keirin-data  # レーティングも評価
 uv run keirin predict-eval --date 2026-09-28 --to 2026-10-04 --data-dir ../keirin-data   # 予想の評価（前日までで学習）
+YOUTUBE_API_KEY=... uv run keirin public-streams --out streams.json   # 公開版マルチビューの配信一覧（YouTube だけ）
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
 ```
@@ -182,7 +190,8 @@ src/keirin/
   notify.py         注目選手の出走通知（watchlist.toml の照合、Discord の Webhook、送信済みの記録）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
-  youtube.py        マルチビューの配信検索（YouTube Data API。全43場のチャンネル、タイトルから場への照合）
+  youtube.py        マルチビューの配信検索（YouTube Data API。全43場のチャンネル、タイトルから場への照合）。
+                    公開版用に、全場を探す find_all_streams と streams.json を作る streams_document もある
   multiview.py      マルチビューのページ（発走予定からの強調、枠の割り当て、YouTube の埋め込み）
   viewer.py         出走表ビューア（Streamlit）。「出走表」と「マルチビュー」の2ページ。並びの図（車番の色、ラインごと、競りは縦に重ねる）、
                     「出走表」タブ（補正得点、ライン、位置＝先頭／番手／単騎、競り）、「予想」タブ（1着・2着以内・3着以内の確率）、
@@ -249,6 +258,12 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   - 配信の検索は YouTube Data API だけで行う（YouTube のページの機械的な読み取りは規約違反）。キーはオーナーが発行し、Streamlit の Secrets とローカルの `.env` に置く（`YOUTUBE_API_KEY`）。
   - 借り上げ開催（「高松市営玉野競輪」）や他場の番組があるので、チャンネルではなくタイトルで場を決める。施行者の表記を無視するのは、オーナーの補足による。
   - 枠の強調は予定の発走時刻だけで動かし、keirin.jp にレースの終了を問い合わせない。発走予定は開催ごとに1日1回だけ取る（控えめな収集の方針）。
+- 2026-10-21 マルチビューの公開版「競輪マルチビューアー」を作ることにした（オーナーの要望）。
+  - keirin.jp の開催一覧と発走予定は私的使用の範囲でしか使えないので、公開版は YouTube だけで動かす。全場のチャンネルを探し、照合の候補も全場にする。
+  - Streamlit ではなく GitHub Pages の静的ページにした（オーナー承認）。Community Cloud は12時間で眠る、余白が大きく1画面に収めにくい、
+    静的ページなら API を呼ぶのは Actions だけなので訪問者が増えてもクォータが増えない、のため。画面は「上に1行の帯＋2×2」の A 案（オーナー選択）。
+  - streams.json はリポジトリにコミットせず、Pages の成果物としてだけ置く（YouTube の開発者ポリシーが API のデータの長期保存を制限しているため）。
+  - キーは公開版専用（今のビューアと分ける）。リポジトリの作成と Pages の有効化は Claude が gh で、キーの発行と Secret の登録はオーナーが行う（オーナー決定）。
 
 ## 現状と TODO
 
@@ -293,4 +308,6 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [x] マルチビュー（2026-10-21。docs/multiview.md）。実際のキーで、今夜のミッドナイト3場とナイター2場の配信が正しく見つかることを確認した
 - [x] マルチビュー: オーナーが Streamlit の Secrets に `YOUTUBE_API_KEY` を登録し、本番で配信が自動で入ることを確かめた（2026-10-21）
 - [ ] マルチビュー: 1440×900 では2段目にスクロールが要る。使ってもらってから、1画面に収めるか相談する
+- [ ] 公開版マルチビュー（keirin-multiviewer）の公開。オーナーが公開版専用のキーを発行し、Secret `YOUTUBE_API_KEY` を登録する
+- [ ] 公開版マルチビューを組織のプロフィール（.github の profile/README.md）に載せるか、公開後にオーナーに聞く
 - [ ] オーナーから機能の要望を受けたら、ここに追記する
