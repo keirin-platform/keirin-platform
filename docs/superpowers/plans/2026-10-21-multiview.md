@@ -60,17 +60,21 @@ Run: `git switch -c feat/multiview`。そのあと `.gitignore` の末尾に `.s
 ```python
 TODAY = {"61", "47", "13", "11", "75", "71", "87", "81"}
 
-@pytest.mark.parametrize(("title", "channel_venue", "expected"), [
-    ("高松市営玉野競輪 F2 初日", "71", "61"),               # 借り上げ: 施行者を無視
-    ("【富山市営】松阪競輪F2ミッドナイト 初日", "47", "47"),
-    ("【函館inいわき平 実況中継】1日目", "13", "13"),         # X in Y は Y
-    ("【競輪予想】熊本G3 決勝 前日予想", "11", None),          # 予想は除外
-    ("前検日コメント杯 F2【1日目】", "44", "44"),              # 場名なし → チャンネルの場
-    ("モーニング競輪 ラブ杯 in松山 1日目", "71", "75"),
-    ("熊本けいりんLIVE 初日 解説 小倉太郎", "87", "87"),        # チャンネル自身の場を優先
-    ("高松宮記念杯競輪 岸和田 G1 初日", "56", "56"),            # 高松宮は高松ではない
-    ("四日市KEIRIN LIVE 初日", "48", "48"),                    # KEIRIN の in は区切りではない
-])
+
+@pytest.mark.parametrize(
+    ("title", "channel_venue", "expected"),
+    [
+        ("高松市営玉野競輪 F2 初日", "71", "61"),  # 借り上げ: 施行者を無視
+        ("【富山市営】松阪競輪F2ミッドナイト 初日", "47", "47"),
+        ("【函館inいわき平 実況中継】1日目", "13", "13"),  # X in Y は Y
+        ("【競輪予想】熊本G3 決勝 前日予想", "11", None),  # 予想は除外
+        ("前検日コメント杯 F2【1日目】", "44", "44"),  # 場名なし → チャンネルの場
+        ("モーニング競輪 ラブ杯 in松山 1日目", "71", "75"),
+        ("熊本けいりんLIVE 初日 解説 小倉太郎", "87", "87"),  # チャンネル自身の場を優先
+        ("高松宮記念杯競輪 岸和田 G1 初日", "56", "56"),  # 高松宮は高松ではない
+        ("四日市KEIRIN LIVE 初日", "48", "48"),  # KEIRIN の in は区切りではない
+    ],
+)
 def test_match_venue(title, channel_venue, expected):
     assert match_venue(title, channel_venue, TODAY | {"44", "56"}) == expected
 ```
@@ -90,15 +94,31 @@ Expected: FAIL（`ImportError`）
 def test_pick_prefers_own_channel_and_window():
     jst = timezone(timedelta(hours=9))
     window = (datetime(2026, 10, 21, 21, 0, tzinfo=jst), datetime(2026, 10, 21, 23, 50, tzinfo=jst))
-    own = Stream("own00000001", CHANNELS["61"][0], "玉野競輪 初日", window[0] - timedelta(minutes=30), False)
-    other = Stream("oth00000001", CHANNELS["71"][0], "高松市営玉野競輪 初日", window[0] - timedelta(minutes=30), True)
-    yesterday = Stream("old00000001", CHANNELS["61"][0], "玉野競輪 最終日", window[0] - timedelta(days=1), False)
-    early = Stream("erl00000001", CHANNELS["61"][0], "玉野競輪 モーニング", window[0] - timedelta(hours=14), False)
+    own = Stream(
+        "own00000001", CHANNELS["61"][0], "玉野競輪 初日", window[0] - timedelta(minutes=30), False
+    )
+    other = Stream(
+        "oth00000001",
+        CHANNELS["71"][0],
+        "高松市営玉野競輪 初日",
+        window[0] - timedelta(minutes=30),
+        True,
+    )
+    yesterday = Stream(
+        "old00000001", CHANNELS["61"][0], "玉野競輪 最終日", window[0] - timedelta(days=1), False
+    )
+    early = Stream(
+        "erl00000001",
+        CHANNELS["61"][0],
+        "玉野競輪 モーニング",
+        window[0] - timedelta(hours=14),
+        False,
+    )
     got = pick_streams([other, own, yesterday, early], {"61": window}, date(2026, 10, 21))
     assert got == {"61": own}
 
-def test_pick_without_schedule_accepts_any_stream_today():
-    ...  # meetings={"61": None} のとき、JST で今日に始まる配信なら採る
+
+def test_pick_without_schedule_accepts_any_stream_today(): ...  # meetings={"61": None} のとき、JST で今日に始まる配信なら採る
 ```
 
 時間の窓は「最初のレースの4時間前〜最終レース」。複数の候補が残ったら、実際の場のチャンネル、ライブ中、開始が早い、の順で選ぶ。
