@@ -18,11 +18,12 @@ def test_public_streams_writes_document(tmp_path, monkeypatch):
     s = Stream(
         "vid00000001", CHANNELS["47"][0], "松阪", datetime(2026, 10, 21, 20, 45, tzinfo=JST), True
     )
-    monkeypatch.setattr(cli.youtube, "find_all_streams", lambda client, day: {"47": s})
+    monkeypatch.setattr(cli.youtube, "find_all_streams", lambda client, day: {day: {"47": s}})
     out = tmp_path / "streams.json"
     assert cli.main(["public-streams", "--out", str(out)]) == 0
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["streams"][0]["venue_name"] == "松阪"
+    assert doc["streams"][0]["day"]  # the run's JST date
     assert "松阪" in out.read_text(encoding="utf-8")  # not escaped
 
 

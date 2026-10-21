@@ -250,7 +250,7 @@ def test_find_all_streams_searches_every_channel():
     )
     got = find_all_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21))
     assert calls.count("playlistItems") == sum(len(c) for c in CHANNELS.values())
-    assert set(got) == {"75"}  # 高松のチャンネルの松山の開催は、松山になる
+    assert set(got[date(2026, 10, 21)]) == {"75"}  # 高松のチャンネルの松山の開催は、松山になる
 
 
 def test_find_all_streams_non_race_live_on_idle_channel():
@@ -269,7 +269,7 @@ def test_find_all_streams_non_race_live_on_idle_channel():
         {maebashi: ["vid00000003", "vid00000004"]},
     )
     got = find_all_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21))
-    assert {k: v.video_id for k, v in got.items()} == {"22": "vid00000003"}
+    assert {k: v.video_id for k, v in got[date(2026, 10, 21)].items()} == {"22": "vid00000003"}
 
 
 def test_streams_document_shape_and_order():
@@ -277,10 +277,21 @@ def test_streams_document_shape_and_order():
         "vid00000002", MATSUSAKA, "松阪", datetime(2026, 10, 21, 20, 45, tzinfo=JST), False
     )
     early = Stream("vid00000001", TAMANO, "玉野", datetime(2026, 10, 21, 10, 0, tzinfo=JST), True)
-    doc = streams_document({"47": late, "61": early}, datetime(2026, 10, 21, 19, 13, 5, tzinfo=JST))
+    tomorrow = Stream(
+        "vid00000005", MATSUSAKA, "松阪", datetime(2026, 10, 22, 20, 45, tzinfo=JST), False
+    )
+    doc = streams_document(
+        {date(2026, 10, 22): {"47": tomorrow}, date(2026, 10, 21): {"47": late, "61": early}},
+        datetime(2026, 10, 21, 19, 13, 5, tzinfo=JST),
+    )
     assert doc["generated_at"] == "2026-10-21T19:13:05+09:00"
-    assert [s["venue_code"] for s in doc["streams"]] == ["61", "47"]
+    assert [(s["day"], s["venue_code"]) for s in doc["streams"]] == [
+        ("2026-10-21", "61"),
+        ("2026-10-21", "47"),
+        ("2026-10-22", "47"),
+    ]
     assert doc["streams"][1] == {
+        "day": "2026-10-21",
         "venue_code": "47",
         "venue_name": "松阪",
         "video_id": "vid00000002",
@@ -300,3 +311,44 @@ def test_any_live_ignores_a_live_stream_stuck_for_days():
     )
     got = pick_streams([stuck, tonight], {"61": None}, date(2026, 10, 21), any_live=True)
     assert got == {"61": tonight}
+
+
+def test_find_all_streams_covers_today_and_tomorrow():
+    # A late cron run must not leave the next morning without streams: tomorrow's booked
+    # streams are listed too, and the page picks the day by its own clock.
+    transport, _ = _api(
+        {
+            "vid00000006": _video(
+                "vid00000006", MATSUSAKA, "松阪競輪 1日目", "2026-10-21T11:00:00Z"
+            ),
+            "vid00000007": _video(
+                "vid00000007", MATSUSAKA, "松阪競輪 2日目", "2026-10-22T11:00:00Z"
+            ),
+            "vid00000008": _video(
+                "vid00000008", MATSUSAKA, "松阪競輪 3日目", "2026-10-23T11:00:00Z"
+            ),
+        },
+        {MATSUSAKA: ["vid00000006", "vid00000007", "vid00000008"]},
+    )
+    got = find_all_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21))
+    assert {day: {k: v.video_id for k, v in by.items()} for day, by in got.items()} == {
+        date(2026, 10, 21): {"47": "vid00000006"},
+        date(2026, 10, 22): {"47": "vid00000007"},
+    }
+
+
+def test_find_all_streams_live_now_is_today_not_tomorrow():
+    started = {"actualStartTime": "2026-10-21T10:50:00Z"}
+    transport, _ = _api(
+        {
+            "vid00000006": _video(
+                "vid00000006", MATSUSAKA, "松阪競輪", "2026-10-21T11:00:00Z", **started
+            )
+        },
+        {MATSUSAKA: ["vid00000006"]},
+    )
+    got = find_all_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21))
+    assert got == {
+        date(2026, 10, 21): {"47": got[date(2026, 10, 21)]["47"]},
+        date(2026, 10, 22): {},
+    }
