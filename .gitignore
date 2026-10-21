@@ -17,3 +17,4 @@ build/
 # Misc
 .env
 .DS_Store
+.superpowers/

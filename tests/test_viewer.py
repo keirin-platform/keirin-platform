@@ -155,3 +155,12 @@ def test_prediction_model_failure_is_shown(tmp_path, monkeypatch):
     at = run_app(tmp_path, monkeypatch)  # no exception escapes
     assert any("予想モデル" in e.value for e in at.error)
     assert frame_with(at, "補正得点") is not None  # the card is still shown
+
+
+def test_youtube_key_from_env(monkeypatch):
+    from keirin.viewer import youtube_key
+
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+    assert youtube_key() is None
+    monkeypatch.setenv("YOUTUBE_API_KEY", "env-key")
+    assert youtube_key() == "env-key"

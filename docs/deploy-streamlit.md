@@ -36,9 +36,16 @@
    - **Public（This app is public and searchable）には絶対にしない**（データが誰でも見られて検索にも載る。私的使用の範囲を超える）。
    - Private リポジトリから動かすアプリは既定で Private になるが、念のため確認する。
 4. アプリの URL を開き、招待したメールアドレス（Google ログインか、メールのリンク）でログインする。
+5. マルチビュー（docs/multiview.md）のために、アプリの **Settings → Secrets** に YouTube Data API のキーを登録する（2026-10-21 追加）。
+   ```toml
+   YOUTUBE_API_KEY = "発行したキー"
+   ```
+   - キーがなくてもアプリは動く（マルチビューは、配信の URL を手で貼る使い方になる）。
+   - キーは Google Cloud のコンソールで、**YouTube Data API v3 だけ**に制限しておく。
 
 ## ローカルで動かす
 ```bash
 uv sync --all-extras
 KEIRIN_DATA_DIR=../keirin-data uv run streamlit run src/keirin/viewer.py
 ```
+マルチビューで配信を自動で探すには、`.env`（git の対象外）に `YOUTUBE_API_KEY=...` を書いて、`set -a && . ./.env && set +a` のあとに起動する。
