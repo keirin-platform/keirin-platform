@@ -79,11 +79,15 @@
    各場の公式 YouTube ライブを、ビューアの「マルチビュー」ページに最大4枠（2×2 固定）で並べる。設計と実装メモは [docs/multiview.md](docs/multiview.md)。
    - 音は自動で切り替えない（解説を聞きたいこともある。オーナー指定）。枠の大きさと位置も変えない（発走の遅れでタイミングが重なると煩わしい。オーナー指定）。
    - ノート PC が前提で、スマホは考慮しない（オーナー指定）。表示は最大4場で、場は自分で選ぶ（オーナー指定）。
-   - **公開版「競輪マルチビューアー」**（2026-10-21、オーナーの要望。ほかの競輪ファンに使ってもらい、記事のネタにもする）。
-     keirin.jp を一切使わず YouTube だけで動く静的ページで、Public リポジトリ `keirin-platform/keirin-multiviewer` の GitHub Pages
-     （<https://keirin-platform.github.io/keirin-multiviewer/>）に置く。発走予定からの強調や残り時間はない（締切・発走時刻は配信の画面に出ているので足りる。オーナー談）。
-     設計は [docs/superpowers/specs/2026-10-21-public-multiviewer-design.md](docs/superpowers/specs/2026-10-21-public-multiviewer-design.md)。
-     **記事からリンクしてよい**（「ビューアや Private リポジトリにはリンクしない」の例外。keirin.jp のデータを使わないため）。
+   - **公開版「競輪マルチビューアー」**（2026-10-21 に作って公開、**2026-10-22 に非公開にした**。オーナー判断）。
+     keirin.jp を一切使わず YouTube だけで動く静的ページ（`keirin-platform/keirin-multiviewer`、GitHub Pages）。設計は
+     [docs/superpowers/specs/2026-10-21-public-multiviewer-design.md](docs/superpowers/specs/2026-10-21-public-multiviewer-design.md)。
+     - **非公開にした理由**: 競輪の映像の著作権・放映権は、2023-03-15 から JCI（株式会社ジャパン・サイクル・インフィニティ）が施行者（千葉市を除く）に代わって管理していて、
+       映像を利用するには JCI への映像利用申請（利用予定日の1週間前まで）が要る（<https://www.jc-infinity.co.jp/others/detail/20240531135713.html>）。
+       各場の公式 YouTube の埋め込みでも、公開ページで並べるのは扱いが難しいと判断した。
+     - リポジトリは Private にし（Pages は止まり、URL は 404）、検索とデプロイのワークフロー（deploy.yml）は無効にした（Private の Actions の minutes を使わないため）。Secret のキーは残っている。
+     - **Streamlit のビューアのマルチビューはそのまま使う**（招待した人だけが見られる Private アクセスのため。オーナー判断）。
+     - 再び公開するなら、先に JCI の規程を確かめ、必要なら申請する。記事からはリンクしない。
 
 ## 構成
 
@@ -92,8 +96,7 @@ keirin-platform/keirin-platform (Public)   ← このリポジトリ。コード
   └─ .github/workflows/collect.yml          再利用可能ワークフロー（収集ロジック本体）
 keirin-platform/keirin-data (Private)      ← 収集データの置き場
 keirin-platform/keirin-blog (Private)      ← はてなブログの記事（blog-sync.yml を呼ぶ caller。docs/blog.md）
-keirin-platform/keirin-multiviewer (Public) ← 公開版マルチビュー（GitHub Pages）。Actions が `keirin public-streams` を
-                                             keirin-platform の SHA 固定で動かし、streams.json とページをデプロイする（キーは Secret）
+keirin-platform/keirin-multiviewer (Private) ← 公開版マルチビュー（2026-10-22 に非公開にした。Pages は停止、deploy.yml は無効）
 keirin-platform/.github (Public)           ← 組織のプロフィール（profile/README.md）。公開してよい内容だけを書く
                                              （Private リポジトリ、ビューアの URL、内部 API の詳細には触れない）
   └─ .github/workflows/collect.yml          上を呼ぶだけの薄い caller（cron は毎日 03:47 JST。並びだけの実行が 11:13・15:13・18:13 JST）
@@ -271,6 +274,8 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   GitHub の schedule は数時間遅れが普通で、半分ほどの回が落とされる（boatraceopenapi/programs の Sync は予定 210 回中 100 回、遅れの中央値は約1時間半）。
   夜の毎時の枠は遅れて重なるだけなので、1日に均等にばらしたほうが、どこかで動く機会が増える。回数は同じなので API の消費も変わらない。
 - 2026-10-22 Public の keirin-platform と keirin-multiviewer に **MIT ライセンス**を付けた（オーナー決定。著作権者の表記は shimomo）。データは Public に置かないので、ライセンスの対象はコードだけ。
+- 2026-10-22 **公開版マルチビューを非公開にした**（オーナー判断）。競輪の映像は JCI が施行者に代わって著作権・放映権を管理し、利用には申請が要るため。
+  Streamlit のビューアのマルチビューは、招待した人だけが見られる Private アクセスなので、そのまま使う。
 
 ## 現状と TODO
 
@@ -319,8 +324,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   手動実行（workflow_dispatch）で build・deploy が成功し、ログにキーは出ていない（`AIza`・`key=` が0件）。本番の streams.json は 10/22 の9場
   （大垣・大宮・小田原・熊本・川崎・四日市・松阪〔【富山市営】〕・前橋・いわき平〔函館in〕）で、keirin.jp の開催一覧と完全に一致し、外れもレース以外の配信もなかった。
   1440×790 のブラウザで、縦スクロールなし、4枠に本物の配信、コンソールエラーなしを確かめた（深夜なので、ライブ中がなく予約中の近い順に入った）。
-- [ ] 公開版マルチビュー: keepalive（API でワークフローを有効にし直す方式）で60日の自動停止が防げるかは、GitHub の文書で確かめられていない。2026-12 下旬（60日後）に、定期実行が動き続けているかを確かめる
-- [ ] 公開版マルチビュー: 最終レビューの細かい指摘（後回し）。URL を書き換えたあと入れる枠を選ぶと前の URL が入る、streams.json が想定外の形だとページが止まる、
+- [x] 公開版マルチビューを非公開にした（2026-10-22、オーナー判断。競輪の映像は JCI への利用申請が要る扱いのため）。リポジトリを Private に、deploy.yml を無効に、組織のプロフィールから削除（keirin-platform/.github#3）
+- [ ] （保留）公開版マルチビュー: 再び公開するなら、JCI の「競輪映像利用及び撮影に関する規程」を確かめて、必要なら申請する。keepalive で60日の自動停止が防げるかも、そのときに確かめる
+- [ ] （保留）公開版マルチビュー: 最終レビューの細かい指摘（後回し）。URL を書き換えたあと入れる枠を選ぶと前の URL が入る、streams.json が想定外の形だとページが止まる、
   httpx などの依存の版を固定していない、長い場名（ブッキースタジアム岸和田など）が帯の幅を取る、ページのブラウザ確認が手動だけ
-- [x] 公開版マルチビューを組織のプロフィール（.github の profile/README.md）に載せた（2026-10-22、オーナーの依頼。keirin-platform/.github#2。MIT ライセンスも記載）
+- [x] 公開版マルチビューを組織のプロフィール（.github の profile/README.md）に載せた（2026-10-22、keirin-platform/.github#2）。同日、非公開にしたので外した（#3）。MIT ライセンスの記載は残した
 - [ ] オーナーから機能の要望を受けたら、ここに追記する
