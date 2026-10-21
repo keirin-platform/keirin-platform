@@ -189,8 +189,15 @@ def pick_streams(
         venue = match_venue(s.title, channel_venue, set(meetings))
         if venue not in meetings:
             continue
-        # With any_live, a stream already on air counts whenever it started.
-        live_anyday = any_live and s.live and meetings[venue] is None
+        # With any_live, a stream already on air counts if it started yesterday or later
+        # (a midnight meeting's stream may begin the day before); one stuck on air for
+        # days must not hide the venue's stream booked for today.
+        live_anyday = (
+            any_live
+            and s.live
+            and meetings[venue] is None
+            and s.start.astimezone(JST).date() >= day - timedelta(days=1)
+        )
         if not live_anyday and not _in_window(s.start, meetings[venue], day):
             continue
         rank = (s.channel_id not in CHANNELS[venue], not s.live, s.start)
