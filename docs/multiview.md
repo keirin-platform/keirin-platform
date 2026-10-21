@@ -2,6 +2,7 @@
 
 2026-10-21 にオーナーと詰めた設計。同日に実装した（`src/keirin/youtube.py`、`src/keirin/multiview.py`、ビューアの「マルチビュー」ページ）。
 実装と確認で分かったことは、末尾の「実装メモ」にある。
+keirin.jp を使わない公開版（競輪マルチビューアー）の設計は [superpowers/specs/2026-10-21-public-multiviewer-design.md](superpowers/specs/2026-10-21-public-multiviewer-design.md)。
 
 ## 目的と背景
 

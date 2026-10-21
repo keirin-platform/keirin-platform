@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import math
 import os
 import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
 
-from keirin import analysis, github_commit, hatena, lines, notify, predict, rating, storage
+from keirin import (
+    analysis,
+    github_commit,
+    hatena,
+    lines,
+    notify,
+    predict,
+    rating,
+    storage,
+    youtube,
+)
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.collect import fetch_day
 from keirin.parse import parse_bundle
 from keirin.score import History, window_start
-from keirin.timeutil import date_range, today_jst, yesterday_jst
+from keirin.timeutil import JST, date_range, today_jst, yesterday_jst
 
 log = logging.getLogger("keirin")
 
@@ -240,6 +251,23 @@ def cmd_collect_lines(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_public_streams(args: argparse.Namespace) -> int:
+    """Today's streams for the public multiviewer: YouTube only, never keirin.jp."""
+    key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if not key:
+        log.error("YOUTUBE_API_KEY is not set")
+        return 2
+    try:
+        streams = youtube.find_all_streams(youtube.YouTubeClient(key), today_jst())
+    except youtube.YouTubeError as e:  # the message never carries the key
+        log.error("stream search failed: %s", e)
+        return 1
+    doc = youtube.streams_document(streams, datetime.now(JST))
+    args.out.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    log.info("wrote %d streams to %s", len(doc["streams"]), args.out)
+    return 0
+
+
 def cmd_discord_test(args: argparse.Namespace) -> int:
     discord = _discord()
     if discord is None:
@@ -366,6 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="notify matching races of watched riders to Discord (DISCORD_WEBHOOK_URL)",
     )
     p.set_defaults(func=cmd_collect_lines)
+
+    p = sub.add_parser(
+        "public-streams",
+        help="write today's venue live streams for the public multiviewer (YouTube only)",
+    )
+    p.add_argument("--out", type=Path, required=True, help="streams.json to write")
+    p.set_defaults(func=cmd_public_streams)
 
     p = sub.add_parser("discord-test", help="send a test message to DISCORD_WEBHOOK_URL")
     p.set_defaults(func=cmd_discord_test)
