@@ -1,4 +1,7 @@
 from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import pytest
 
 from keirin.multiview import (
     VenueStatus,
@@ -9,6 +12,7 @@ from keirin.multiview import (
     venue_status,
 )
 from keirin.timeutil import JST
+from keirin.youtube import embed_url
 
 NOW = datetime(2026, 10, 21, 23, 40, tzinfo=JST)
 
@@ -72,3 +76,80 @@ def test_assign_slots_keeps_positions():
         "11",
     ]
     assert assign_slots(["22", "81", "13", "11"], []) == [None] * 4
+
+
+# --- page -------------------------------------------------------------------------------
+
+SCRIPT = str(Path(__file__).with_name("multiview_script.py"))
+
+
+def run_page(tmp_path, monkeypatch, **env: str):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("KEIRIN_TEST_DATA_DIR", str(tmp_path))
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    at = AppTest.from_file(SCRIPT, default_timeout=30)
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def iframes(at) -> list[str]:
+    return [e.proto.src for e in at.get("iframe")]
+
+
+def texts(at) -> str:
+    return " ".join(
+        str(e.value)
+        for kind in ("markdown", "warning", "info", "error", "caption")
+        for e in at.get(kind)
+    )
+
+
+def test_page_defaults_and_missing_stream(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch)
+    assert at.multiselect[0].value == ["22", "47", "13"]
+    assert iframes(at) == [embed_url("found000001")]
+    assert texts(at).count("配信が見つかりません") == 2
+    assert len(at.text_input) == 3  # every tile can take a pasted URL
+
+
+def test_page_without_api_key(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch, KEIRIN_TEST_STREAMS="none")
+    assert "API キーが未設定" in texts(at)
+    assert iframes(at) == []
+    assert len(at.text_input) == 3
+
+
+def test_page_api_error_falls_back(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch, KEIRIN_TEST_STREAMS="error")
+    assert iframes(at) == []
+    assert texts(at).count("配信が見つかりません") == 3
+
+
+def test_page_schedule_failure(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch, KEIRIN_TEST_SCHEDULE_FAIL="47")
+    picker = at.multiselect[0]
+    assert "47" in picker.options or any("松阪" in o for o in picker.options)
+    assert any("発走予定を取得できません" in o for o in picker.options)
+    assert "47" in picker.value  # still shown; only the highlight and countdown are missing
+
+
+def test_manual_url_overrides(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch)
+    at.text_input[0].input("https://youtu.be/manual00001").run()
+    assert not at.exception, at.exception
+    assert iframes(at)[0] == embed_url("manual00001")
+    at.run()  # streams are looked up again; the pasted one stays
+    assert iframes(at)[0] == embed_url("manual00001")
+
+
+def test_page_keeps_tiles_when_a_venue_is_swapped(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch)
+    at.multiselect[0].set_value(["22", "13", "81"]).run()
+    assert not at.exception, at.exception
+    tiles = [m.value for m in at.markdown if "R" in m.value or "終了" in m.value]
+    assert "いわき平" in " ".join(tiles)
+    assert iframes(at) == [embed_url("found000001")]

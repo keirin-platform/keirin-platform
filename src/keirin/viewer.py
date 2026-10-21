@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -21,9 +21,11 @@ import streamlit as st
 from keirin import predict
 from keirin.client import KeirinApiError, KeirinClient
 from keirin.lines import position_label
+from keirin.multiview import Windows, render_multiview
 from keirin.score import STEP_DELTAS, window_start
 from keirin.store import CachedClient, NotFound, Store
-from keirin.timeutil import today_jst
+from keirin.timeutil import JST, today_jst
+from keirin.youtube import Stream, YouTubeClient, find_streams
 
 WEEKDAYS = "月火水木金土日"
 TIME_SLOTS = {
@@ -442,13 +444,52 @@ def _render_prediction(
     st.caption(" ".join(notes))
 
 
+def youtube_key() -> str | None:
+    """The YouTube Data API key: Streamlit secrets on Community Cloud, else the environment."""
+    try:
+        key = st.secrets.get("YOUTUBE_API_KEY")
+    except Exception:  # no secrets.toml
+        key = None
+    return key or os.environ.get("YOUTUBE_API_KEY") or None
+
+
+@st.cache_data(ttl=900, show_spinner="YouTube の配信を探しています…")
+def _find_streams(_key: str, day: date, windows: Windows) -> dict[str, Stream]:
+    return find_streams(YouTubeClient(_key), day, windows)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    st.set_page_config(page_title="競輪 補正得点", page_icon="🚴", layout="wide")
     data_dir = os.environ.get("KEIRIN_DATA_DIR", ".")
     version = _data_version(Path(data_dir))
-    render(_store(data_dir, version), today_jst(), lambda: _model(data_dir, version))
+    key = youtube_key()
+
+    def cards() -> None:
+        render(_store(data_dir, version), today_jst(), lambda: _model(data_dir, version))
+
+    def multiview() -> None:
+        def streams(windows: Windows) -> dict[str, Stream]:
+            return _find_streams(key, today_jst(), windows)
+
+        render_multiview(
+            _store(data_dir, version), lambda: datetime.now(JST), streams if key else None
+        )
+
+    page = st.navigation(
+        [
+            st.Page(cards, title="出走表", icon="🚴", default=True),
+            st.Page(multiview, title="マルチビュー", icon="📺", url_path="multiview"),
+        ]
+    )
+    st.set_page_config(
+        page_title="競輪 補正得点",
+        page_icon="🚴",
+        layout="wide",
+        # The videos get the whole width; the page list is one click away.
+        initial_sidebar_state="collapsed" if page.url_path == "multiview" else "auto",
+    )
+    page.run()
 
 
 if __name__ == "__main__":

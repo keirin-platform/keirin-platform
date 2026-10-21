@@ -6,15 +6,22 @@ moves, and only from the scheduled start times (keirin.jp is not polled for resu
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from keirin.timeutil import JST
+from keirin.youtube import Stream, YouTubeError, embed_url, video_id_from_url
+
+log = logging.getLogger(__name__)
 
 # Minutes after a scheduled start before the highlight moves on (races are rarely late).
 WAIT_MINUTES = 5
 MAX_TILES = 4
+TILE_HEIGHT = 360  # 16:9 at about half the width of a laptop screen
+HIGHLIGHT = "background-color: rgba(232, 163, 61, .35)"
 
 State = Literal["upcoming", "waiting", "finished", "unknown"]
 
@@ -78,3 +85,155 @@ def assign_slots(previous: list[str | None], selected: list[str]) -> list[str | 
         if code not in slots and None in slots:
             slots[slots.index(None)] = code
     return slots
+
+
+# --- page -----------------------------------------------------------------------------
+
+Schedule = list[tuple[int, datetime]]
+Windows = dict[str, tuple[datetime, datetime] | None]
+
+
+def _schedule(store: Any, day: date, code: str) -> Schedule | None:
+    """Scheduled starts, fetched once per meeting and day (they do not change)."""
+    import streamlit as st
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def fetch(data_dir: str, day: date, code: str) -> Schedule:
+        return start_datetimes(day, store.races(day, code))
+
+    try:
+        return fetch(str(store.data_dir), day, code)
+    except Exception as e:  # keirin.jp down or the meeting missing: show the video anyway
+        log.warning("no schedule for %s on %s: %s", code, day, e)
+        return None
+
+
+def _until(start: datetime, now: datetime) -> str:
+    minutes = int((start - now).total_seconds() // 60)
+    return "まもなく" if minutes < 1 else f"あと{minutes}分"
+
+
+def _status_text(status: VenueStatus, now: datetime) -> str:
+    if status.state == "unknown":
+        return "発走予定を取得できません"
+    if status.state == "finished":
+        return "本日終了"
+    text = f"{status.race_no}R 予定 {status.start:%H:%M}"
+    return (
+        f"{text} 発走待ち"
+        if status.state == "waiting"
+        else f"{text}（{_until(status.start, now)}）"
+    )
+
+
+def render_multiview(
+    store: Any,
+    clock: Callable[[], datetime],
+    streams: Callable[[Windows], dict[str, Stream]] | None,
+) -> None:
+    """The multiview page. `streams` finds today's streams (None when there is no API key)."""
+    import streamlit as st
+
+    from keirin.viewer import TIME_SLOTS
+
+    now = clock()
+    day = now.date()
+    try:
+        meetings = {m["venue_code"]: m for m in store.meetings(day)}
+    except Exception as e:
+        st.error(f"KEIRIN.JP から開催情報を取得できませんでした（{e}）。")
+        return
+    if not meetings:
+        st.info("今日の開催はありません。")
+        return
+    schedules = {code: _schedule(store, day, code) for code in meetings}
+
+    def statuses(at: datetime) -> dict[str, VenueStatus]:
+        return {code: venue_status(code, schedules[code], at) for code in meetings}
+
+    def name(code: str) -> str:
+        m = meetings[code]
+        return " ".join(filter(None, [m["venue_name"], TIME_SLOTS.get(m.get("time_slot"), "")]))
+
+    current = statuses(now)
+    order = [s.venue_code for s in _racing(list(current.values()))]
+    order += [c for c in meetings if current[c].state == "unknown"]
+    order += [c for c in meetings if c not in order]
+    if "mv_selected" not in st.session_state:
+        st.session_state["mv_selected"] = default_selection(list(current.values()))
+    selected = st.multiselect(
+        "映す場（最大4場）", order, key="mv_selected", max_selections=MAX_TILES,
+        format_func=lambda c: f"{name(c)}　{_status_text(current[c], now)}",
+    )  # fmt: skip
+    slots = assign_slots(st.session_state.get("mv_slots", [None] * MAX_TILES), selected)
+    st.session_state["mv_slots"] = slots
+    manual: dict[str, str] = st.session_state.setdefault("mv_manual", {})
+
+    found: dict[str, Stream] = {}
+    if streams is None:
+        st.info("YouTube の API キーが未設定です。各枠に配信の URL を貼ると表示できます。")
+    else:
+        windows: Windows = {
+            code: (min(t for _, t in s), max(t for _, t in s)) if s else None
+            for code, s in schedules.items()
+        }
+        try:
+            found = streams(windows)
+        except YouTubeError as e:
+            log.warning("stream lookup failed: %s", e)
+            st.warning("YouTube の配信を探せませんでした。各枠に配信の URL を貼ってください。")
+
+    @st.fragment(run_every=30)
+    def header(code: str) -> None:
+        at = clock()
+        live = statuses(at)
+        on_screen = [live[c] for c in slots if c]
+        style = HIGHLIGHT if highlighted(on_screen) == code else ""
+        st.markdown(
+            f'<div style="{style}; padding: 2px 6px; border-radius: 4px">'
+            f"<b>{name(code)}</b>　{_status_text(live[code], at)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    @st.fragment(run_every=30)
+    def next_starts() -> None:
+        at = clock()
+        upcoming = _racing([statuses(at)[c] for c in slots if c])
+        lines = [
+            f"- {s.start:%H:%M} {name(s.venue_code)} {s.race_no}R"
+            + ("（発走待ち）" if s.state == "waiting" else f"（{_until(s.start, at)}）")
+            for s in upcoming
+        ]
+        st.markdown("**次の発走**\n\n" + ("\n".join(lines) or "この後のレースはありません。"))
+
+    def set_manual(code: str) -> None:
+        url = st.session_state.get(f"mv_url_{code}", "")
+        if video_id := video_id_from_url(url):
+            manual[code] = video_id
+
+    def tile(code: str) -> None:
+        header(code)
+        video_id = manual.get(code) or (found[code].video_id if code in found else None)
+        if video_id:
+            st.iframe(embed_url(video_id), height=TILE_HEIGHT)
+        else:
+            st.warning("配信が見つかりません。下の欄に YouTube の URL を貼ってください。")
+        with st.popover("配信を差し替え" if video_id else "配信の URL を入力"):
+            st.text_input(
+                "YouTube の URL", key=f"mv_url_{code}", on_change=set_manual, args=(code,),
+                placeholder="https://www.youtube.com/watch?v=…",
+            )  # fmt: skip
+            if st.session_state.get(f"mv_url_{code}") and code not in manual:
+                st.error("YouTube の動画の URL ではありません。")
+
+    full = None not in slots
+    if full:
+        next_starts()
+    panel = None if full else slots.index(None)
+    for row in range(MAX_TILES // 2):
+        for col, i in zip(st.columns(2), (2 * row, 2 * row + 1), strict=True):
+            with col:
+                if slots[i]:
+                    tile(slots[i])
+                elif i == panel:
+                    next_starts()
