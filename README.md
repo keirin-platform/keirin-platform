@@ -16,3 +16,7 @@ uv run pytest -q
 ```
 
 開発ルールや設計の経緯は [CLAUDE.md](CLAUDE.md) を参照。
+
+## ライセンス
+
+[MIT](LICENSE)
