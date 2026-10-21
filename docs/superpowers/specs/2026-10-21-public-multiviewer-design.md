@@ -1,5 +1,8 @@
 # 競輪マルチビューアー（マルチビューの公開版）設計
 
+> **2026-10-22 に非公開にした**（オーナー判断）。競輪の映像の著作権・放映権は JCI が施行者に代わって管理していて、利用には JCI への申請が要る
+> （<https://www.jc-infinity.co.jp/others/detail/20240531135713.html>）。リポジトリは Private、Pages は停止、deploy.yml は無効。経緯は CLAUDE.md の決定ログ。
+
 2026-10-21 にオーナーと詰めた設計。元になったのは、Private のビューアにある「マルチビュー」（[docs/multiview.md](../../multiview.md)）。
 「（Claude の判断）」と書いたものは、オーナーと話していない Claude の判断で、あとで変えてよい。
 
