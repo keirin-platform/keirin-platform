@@ -288,3 +288,15 @@ def test_streams_document_shape_and_order():
         "start": "2026-10-21T20:45:00+09:00",
         "live": False,
     }
+
+
+def test_any_live_ignores_a_live_stream_stuck_for_days():
+    # A stream left on air for days must not hide tonight's booked stream of the venue.
+    stuck = Stream(
+        "vid00000010", TAMANO, "玉野競輪", datetime(2026, 10, 18, 20, 0, tzinfo=JST), True
+    )
+    tonight = Stream(
+        "vid00000011", TAMANO, "玉野競輪", datetime(2026, 10, 21, 20, 0, tzinfo=JST), False
+    )
+    got = pick_streams([stuck, tonight], {"61": None}, date(2026, 10, 21), any_live=True)
+    assert got == {"61": tonight}
