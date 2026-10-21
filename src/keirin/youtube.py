@@ -281,23 +281,34 @@ def find_streams(
     return pick_streams(client.recent_streams(channels), meetings, day)
 
 
-def find_all_streams(client: YouTubeClient, day: date) -> dict[str, Stream]:
-    """Streams of every venue's channel, for the public multiviewer (no keirin.jp schedule).
+def find_all_streams(client: YouTubeClient, day: date) -> dict[date, dict[str, Stream]]:
+    """Streams of every venue's channel for `day` and the day after, for the public multiviewer.
 
-    Without the meetings of the day, every venue is a candidate and any stream starting
-    today, or on air now, counts.
+    Without keirin.jp's meetings, every venue is a candidate and a stream counts for the
+    day it starts on (or for `day` while it is on air). The next day is listed too, so
+    that a scheduled run hours late still leaves the morning's streams in place: venues
+    book their streams days ahead, and the page picks the day by its own clock.
     """
     channels = [cid for cids in CHANNELS.values() for cid in cids]
     venues = dict.fromkeys(CHANNELS)
-    return pick_streams(client.recent_streams(channels), venues, day, any_live=True)
+    streams = client.recent_streams(channels)
+    tomorrow = day + timedelta(days=1)
+    return {
+        day: pick_streams(streams, venues, day, any_live=True),
+        tomorrow: pick_streams(streams, venues, tomorrow),
+    }
 
 
-def streams_document(streams: Mapping[str, Stream], generated_at: datetime) -> dict[str, Any]:
+def streams_document(
+    streams: Mapping[date, Mapping[str, Stream]], generated_at: datetime
+) -> dict[str, Any]:
     """The public multiviewer's streams.json; the page reads these keys."""
+    rows = [(day, code, s) for day, by_venue in streams.items() for code, s in by_venue.items()]
     return {
         "generated_at": generated_at.astimezone(JST).isoformat(timespec="seconds"),
         "streams": [
             {
+                "day": day.isoformat(),
                 "venue_code": code,
                 "venue_name": VENUE_NAMES[code][0],
                 "video_id": s.video_id,
@@ -305,7 +316,7 @@ def streams_document(streams: Mapping[str, Stream], generated_at: datetime) -> d
                 "start": s.start.astimezone(JST).isoformat(timespec="seconds"),
                 "live": s.live,
             }
-            for code, s in sorted(streams.items(), key=lambda item: item[1].start)
+            for day, code, s in sorted(rows, key=lambda row: (row[0], row[2].start))
         ],
     }
 
