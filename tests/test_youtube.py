@@ -9,9 +9,11 @@ from keirin.youtube import (
     YouTubeClient,
     YouTubeError,
     embed_url,
+    find_all_streams,
     find_streams,
     match_venue,
     pick_streams,
+    streams_document,
     video_id_from_url,
 )
 
@@ -224,3 +226,65 @@ def test_find_streams_network_down_stops_at_once():
     with pytest.raises(YouTubeError):
         find_streams(client, date(2026, 10, 21), MEETINGS)
     assert len(calls) == 1  # not once per channel
+
+
+# --- public multiviewer (all venues, no keirin.jp) ---------------------------------------
+
+
+def test_pick_any_live_keeps_yesterdays_live_stream():
+    start = datetime(2026, 10, 20, 23, 50, tzinfo=JST)
+    s = Stream("vid00000009", TAMANO, "玉野競輪 2日目", start, True)
+    day = date(2026, 10, 21)
+    assert pick_streams([s], {"61": None}, day) == {}
+    assert pick_streams([s], {"61": None}, day, any_live=True) == {"61": s}
+
+
+def test_find_all_streams_searches_every_channel():
+    transport, calls = _api(
+        {
+            "vid00000001": _video(
+                "vid00000001", TAKAMATSU, "モーニング競輪 in松山 1日目", "2026-10-20T23:30:00Z"
+            )
+        },
+        {TAKAMATSU: ["vid00000001"]},
+    )
+    got = find_all_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21))
+    assert calls.count("playlistItems") == sum(len(c) for c in CHANNELS.values())
+    assert set(got) == {"75"}  # 高松のチャンネルの松山の開催は、松山になる
+
+
+def test_find_all_streams_non_race_live_on_idle_channel():
+    # Known weak spot (design doc): a non-race live without a venue name on an idle
+    # venue's channel shows as that venue. Only titles with "予想" are dropped.
+    maebashi = CHANNELS["22"][0]
+    transport, _ = _api(
+        {
+            "vid00000003": _video(
+                "vid00000003", maebashi, "トークショー生配信", "2026-10-21T09:00:00Z"
+            ),
+            "vid00000004": _video(
+                "vid00000004", maebashi, "【競輪予想】今夜の予想", "2026-10-21T10:00:00Z"
+            ),
+        },
+        {maebashi: ["vid00000003", "vid00000004"]},
+    )
+    got = find_all_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21))
+    assert {k: v.video_id for k, v in got.items()} == {"22": "vid00000003"}
+
+
+def test_streams_document_shape_and_order():
+    late = Stream(
+        "vid00000002", MATSUSAKA, "松阪", datetime(2026, 10, 21, 20, 45, tzinfo=JST), False
+    )
+    early = Stream("vid00000001", TAMANO, "玉野", datetime(2026, 10, 21, 10, 0, tzinfo=JST), True)
+    doc = streams_document({"47": late, "61": early}, datetime(2026, 10, 21, 19, 13, 5, tzinfo=JST))
+    assert doc["generated_at"] == "2026-10-21T19:13:05+09:00"
+    assert [s["venue_code"] for s in doc["streams"]] == ["61", "47"]
+    assert doc["streams"][1] == {
+        "venue_code": "47",
+        "venue_name": "松阪",
+        "video_id": "vid00000002",
+        "title": "松阪",
+        "start": "2026-10-21T20:45:00+09:00",
+        "live": False,
+    }

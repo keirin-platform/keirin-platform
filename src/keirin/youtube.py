@@ -173,6 +173,8 @@ def pick_streams(
     streams: Iterable[Stream],
     meetings: Mapping[str, tuple[datetime, datetime] | None],
     day: date,
+    *,
+    any_live: bool = False,
 ) -> dict[str, Stream]:
     """One stream per venue racing today: the venue's own channel first, then live, then earliest.
 
@@ -185,7 +187,11 @@ def pick_streams(
         if channel_venue is None:
             continue
         venue = match_venue(s.title, channel_venue, set(meetings))
-        if venue not in meetings or not _in_window(s.start, meetings[venue], day):
+        if venue not in meetings:
+            continue
+        # With any_live, a stream already on air counts whenever it started.
+        live_anyday = any_live and s.live and meetings[venue] is None
+        if not live_anyday and not _in_window(s.start, meetings[venue], day):
             continue
         rank = (s.channel_id not in CHANNELS[venue], not s.live, s.start)
         if venue not in best or rank < best[venue][0]:
@@ -266,6 +272,35 @@ def find_streams(
     """Streams for the venues racing on `day` (see :func:`pick_streams` for `meetings`)."""
     channels = [cid for venue in meetings for cid in CHANNELS.get(venue, ())]
     return pick_streams(client.recent_streams(channels), meetings, day)
+
+
+def find_all_streams(client: YouTubeClient, day: date) -> dict[str, Stream]:
+    """Streams of every venue's channel, for the public multiviewer (no keirin.jp schedule).
+
+    Without the meetings of the day, every venue is a candidate and any stream starting
+    today, or on air now, counts.
+    """
+    channels = [cid for cids in CHANNELS.values() for cid in cids]
+    venues = dict.fromkeys(CHANNELS)
+    return pick_streams(client.recent_streams(channels), venues, day, any_live=True)
+
+
+def streams_document(streams: Mapping[str, Stream], generated_at: datetime) -> dict[str, Any]:
+    """The public multiviewer's streams.json; the page reads these keys."""
+    return {
+        "generated_at": generated_at.astimezone(JST).isoformat(timespec="seconds"),
+        "streams": [
+            {
+                "venue_code": code,
+                "venue_name": VENUE_NAMES[code][0],
+                "video_id": s.video_id,
+                "title": s.title,
+                "start": s.start.astimezone(JST).isoformat(timespec="seconds"),
+                "live": s.live,
+            }
+            for code, s in sorted(streams.items(), key=lambda item: item[1].start)
+        ],
+    }
 
 
 def video_id_from_url(url: str) -> str | None:
