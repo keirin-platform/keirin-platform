@@ -209,8 +209,11 @@ class YouTubeClient:
             raise YouTubeError(f"{kind}: HTTP {response.status_code}")
         return response.json()
 
-    def recent_streams(self, channel_ids: Iterable[str], per_channel: int = 8) -> list[Stream]:
+    def recent_streams(self, channel_ids: Iterable[str], per_channel: int = 50) -> list[Stream]:
         """Live and upcoming streams among each channel's latest uploads.
+
+        Uploads are ordered by creation, and venues book their streams days ahead, so a
+        whole page (50, still 1 unit) is read: いわき平 had tonight's stream at #49.
 
         A channel that fails is skipped (it may have been renamed or removed), except
         for 403, which means the key or the daily quota is the problem.

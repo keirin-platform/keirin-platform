@@ -99,7 +99,7 @@ def _api(
             channel = "UC" + request.url.params["playlistId"][2:]
             if channel in fail:
                 return httpx.Response(fail[channel], json={"error": {"code": 404}})
-            ids = uploads.get(channel, [])
+            ids = uploads.get(channel, [])[: int(request.url.params["maxResults"])]
             return httpx.Response(
                 200, json={"items": [{"contentDetails": {"videoId": v}} for v in ids]}
             )
@@ -190,3 +190,17 @@ def test_embed_url_starts_muted():
     assert embed_url("abcDEF12345") == (
         "https://www.youtube.com/embed/abcDEF12345?autoplay=1&mute=1&playsinline=1"
     )
+
+
+def test_find_streams_sees_streams_scheduled_long_ago():
+    # Uploads are ordered by creation, so a stream booked days ahead sits behind newer
+    # interview clips (いわき平 had tonight's stream at #49 of its uploads on 2026-10-21).
+    clips = [f"clp{i:08d}" for i in range(48)]
+    videos = {
+        v: {"id": v, "snippet": {"channelId": TAMANO, "title": "インタビュー"}} for v in clips
+    }
+    videos["old00000001"] = _video("old00000001", TAMANO, "玉野競輪 初日", "2026-10-21T11:00:00Z")
+    transport, calls = _api(videos, {TAMANO: [*clips, "old00000001"]})
+    got = find_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21), MEETINGS)
+    assert got["61"].video_id == "old00000001"
+    assert calls.count("playlistItems") == 2  # still one call per channel
