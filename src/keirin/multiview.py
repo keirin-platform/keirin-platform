@@ -22,6 +22,7 @@ WAIT_MINUTES = 5
 MAX_TILES = 4
 TILE_HEIGHT = 360  # 16:9 at about half the width of a laptop screen
 HIGHLIGHT = "background-color: rgba(232, 163, 61, .35)"
+SLOT_ORDER = {"morning": 0, "day": 1, "night": 2, "midnight": 3}
 
 State = Literal["upcoming", "waiting", "finished", "unknown"]
 
@@ -155,23 +156,31 @@ def render_multiview(
         m = meetings[code]
         return " ".join(filter(None, [m["venue_name"], TIME_SLOTS.get(m.get("time_slot"), "")]))
 
-    current = statuses(now)
-    order = [s.venue_code for s in _racing(list(current.values()))]
-    order += [c for c in meetings if current[c].state == "unknown"]
-    order += [c for c in meetings if c not in order]
+    # The options and their labels must not change during the day: Streamlit resets a
+    # multiselect whose options change, which would empty the page when a race starts.
+    # The changing part (the next race of each venue) goes in the line below it.
+    order = sorted(meetings, key=lambda c: (SLOT_ORDER.get(meetings[c].get("time_slot"), 9), c))
     if "mv_selected" not in st.session_state:
-        st.session_state["mv_selected"] = default_selection(list(current.values()))
+        st.session_state["mv_selected"] = default_selection(list(statuses(now).values()))
     selected = st.multiselect(
-        "映す場（最大4場）", order, key="mv_selected", max_selections=MAX_TILES,
-        format_func=lambda c: f"{name(c)}　{_status_text(current[c], now)}",
-    )  # fmt: skip
+        "映す場（最大4場）", order, key="mv_selected", max_selections=MAX_TILES, format_func=name
+    )
+
+    @st.fragment(run_every=30)
+    def all_venues() -> None:
+        at = clock()
+        live = statuses(at)
+        st.caption("　／　".join(f"{name(c)} {_status_text(live[c], at)}" for c in order))
+
+    all_venues()
     slots = assign_slots(st.session_state.get("mv_slots", [None] * MAX_TILES), selected)
     st.session_state["mv_slots"] = slots
     manual: dict[str, str] = st.session_state.setdefault("mv_manual", {})
 
     found: dict[str, Stream] = {}
+    notices = st.container()  # always there, so a notice does not move the videos
     if streams is None:
-        st.info("YouTube の API キーが未設定です。各枠に配信の URL を貼ると表示できます。")
+        notices.info("YouTube の API キーが未設定です。各枠に配信の URL を貼ると表示できます。")
     else:
         windows: Windows = {
             code: (min(t for _, t in s), max(t for _, t in s)) if s else None
@@ -181,7 +190,7 @@ def render_multiview(
             found = streams(windows)
         except YouTubeError as e:
             log.warning("stream lookup failed: %s", e)
-            st.warning("YouTube の配信を探せませんでした。各枠に配信の URL を貼ってください。")
+            notices.warning("YouTube の配信を探せませんでした。各枠に配信の URL を貼ってください。")
 
     @st.fragment(run_every=30)
     def header(code: str) -> None:
@@ -226,9 +235,13 @@ def render_multiview(
             if st.session_state.get(f"mv_url_{code}") and code not in manual:
                 st.error("YouTube の動画の URL ではありません。")
 
+    # Always create this block, filled or not: the videos below must keep their place in
+    # the page, or the browser reloads them.
+    above = st.container()
     full = None not in slots
     if full:
-        next_starts()
+        with above:
+            next_starts()
     panel = None if full else slots.index(None)
     for row in range(MAX_TILES // 2):
         for col, i in zip(st.columns(2), (2 * row, 2 * row + 1), strict=True):

@@ -131,10 +131,10 @@ def test_page_api_error_falls_back(tmp_path, monkeypatch):
 
 def test_page_schedule_failure(tmp_path, monkeypatch):
     at = run_page(tmp_path, monkeypatch, KEIRIN_TEST_SCHEDULE_FAIL="47")
-    picker = at.multiselect[0]
-    assert "47" in picker.options or any("松阪" in o for o in picker.options)
-    assert any("発走予定を取得できません" in o for o in picker.options)
-    assert "47" in picker.value  # still shown; only the highlight and countdown are missing
+    assert "松阪 ミッドナイト 発走予定を取得できません" in texts(at)
+    assert (
+        "47" in at.multiselect[0].value
+    )  # still shown; only the highlight and countdown are missing
 
 
 def test_manual_url_overrides(tmp_path, monkeypatch):
@@ -153,3 +153,38 @@ def test_page_keeps_tiles_when_a_venue_is_swapped(tmp_path, monkeypatch):
     tiles = [m.value for m in at.markdown if "R" in m.value or "終了" in m.value]
     assert "いわき平" in " ".join(tiles)
     assert iframes(at) == [embed_url("found000001")]
+
+
+def test_selection_survives_time_passing(tmp_path, monkeypatch):
+    # The picker's options must not change with the clock: Streamlit resets a widget whose
+    # options change, which emptied the page in the browser when a race passed its start.
+    at = run_page(tmp_path, monkeypatch)
+    before = at.multiselect[0].options
+    monkeypatch.setenv("KEIRIN_TEST_MINUTES", "4")  # 前橋 1R is now waiting, the order changes
+    at.run()
+    assert not at.exception, at.exception
+    assert at.multiselect[0].options == before
+    assert at.multiselect[0].value == ["22", "47", "13"]
+
+
+def iframe_paths(at) -> dict[str, tuple[int, ...]]:
+    """Where each video sits in the element tree; a moved video is reloaded by the browser."""
+    paths: dict[str, tuple[int, ...]] = {}
+
+    def walk(node, path: tuple[int, ...]) -> None:
+        if getattr(node, "type", None) == "iframe":
+            paths[node.proto.src] = path
+        for i, child in getattr(node, "children", {}).items():
+            walk(child, (*path, i))
+
+    walk(at._tree, ())
+    return paths
+
+
+def test_videos_stay_put_when_a_fourth_venue_is_added(tmp_path, monkeypatch):
+    at = run_page(tmp_path, monkeypatch)
+    before = iframe_paths(at)
+    assert list(before) == [embed_url("found000001")]
+    at.multiselect[0].set_value(["22", "47", "13", "81"]).run()
+    assert not at.exception, at.exception
+    assert iframe_paths(at) == before

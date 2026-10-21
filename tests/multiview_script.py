@@ -1,7 +1,7 @@
 """Streamlit script used by test_multiview.py (AppTest runs scripts, not functions)."""
 
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from keirin.client import KeirinApiError
@@ -45,8 +45,12 @@ def streams(meetings):
     return {"22": Stream("found000001", CHANNELS["22"][0], "前橋競輪 初日", NOW, True)}
 
 
+def clock() -> datetime:
+    return NOW + timedelta(minutes=int(os.environ.get("KEIRIN_TEST_MINUTES", "0")))
+
+
 render_multiview(
     FakeStore(os.environ["KEIRIN_TEST_DATA_DIR"]),
-    lambda: NOW,
+    clock,
     None if os.environ.get("KEIRIN_TEST_STREAMS") == "none" else streams,
 )
