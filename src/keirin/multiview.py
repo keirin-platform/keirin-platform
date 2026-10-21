@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 WAIT_MINUTES = 5
 MAX_TILES = 4
 TILE_HEIGHT = 360  # 16:9 at about half the width of a laptop screen
+# Text above the videos changes as races start and finish; fixed heights keep the
+# videos from moving up and down on the screen (it scrolls inside instead).
+VENUES_HEIGHT = 64
+NEXT_STARTS_HEIGHT = 150
 HIGHLIGHT = "background-color: rgba(232, 163, 61, .35)"
 SLOT_ORDER = {"morning": 0, "day": 1, "night": 2, "midnight": 3}
 
@@ -172,7 +176,8 @@ def render_multiview(
         live = statuses(at)
         st.caption("　／　".join(f"{name(c)} {_status_text(live[c], at)}" for c in order))
 
-    all_venues()
+    with st.container(height=VENUES_HEIGHT, border=False):
+        all_venues()
     slots = assign_slots(st.session_state.get("mv_slots", [None] * MAX_TILES), selected)
     st.session_state["mv_slots"] = slots
     manual: dict[str, str] = st.session_state.setdefault("mv_manual", {})
@@ -240,7 +245,7 @@ def render_multiview(
     above = st.container()
     full = None not in slots
     if full:
-        with above:
+        with above, st.container(height=NEXT_STARTS_HEIGHT, border=False):
             next_starts()
     panel = None if full else slots.index(None)
     for row in range(MAX_TILES // 2):

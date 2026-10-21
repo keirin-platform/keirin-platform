@@ -215,8 +215,9 @@ class YouTubeClient:
         Uploads are ordered by creation, and venues book their streams days ahead, so a
         whole page (50, still 1 unit) is read: いわき平 had tonight's stream at #49.
 
-        A channel that fails is skipped (it may have been renamed or removed), except
-        for 403, which means the key or the daily quota is the problem.
+        A channel that is not found (404) is skipped: it may have been renamed or removed.
+        Anything else stops the search: a 400 / 403 is the key or the daily quota, and a
+        network error would only repeat once per channel.
         """
         video_ids: list[str] = []
         for cid in channel_ids:
@@ -226,7 +227,7 @@ class YouTubeClient:
                     playlistId="UU" + cid[2:],
                 )  # fmt: skip
             except YouTubeError as e:
-                if "HTTP 403" in str(e):
+                if "HTTP 404" not in str(e):
                     raise
                 log.warning("skipped channel %s: %s", cid, e)
                 continue

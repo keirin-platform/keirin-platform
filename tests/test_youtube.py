@@ -204,3 +204,23 @@ def test_find_streams_sees_streams_scheduled_long_ago():
     got = find_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21), MEETINGS)
     assert got["61"].video_id == "old00000001"
     assert calls.count("playlistItems") == 2  # still one call per channel
+
+
+def test_find_streams_invalid_key_is_an_error():
+    # An invalid key gets 400 (keyInvalid), not 403: say so instead of "not found" everywhere.
+    transport, _ = _api({}, {}, fail={"playlistItems": 400})
+    with pytest.raises(YouTubeError):
+        find_streams(YouTubeClient("test-key", transport=transport), date(2026, 10, 21), MEETINGS)
+
+
+def test_find_streams_network_down_stops_at_once():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        raise httpx.ConnectError("down")
+
+    client = YouTubeClient("test-key", transport=httpx.MockTransport(handler))
+    with pytest.raises(YouTubeError):
+        find_streams(client, date(2026, 10, 21), MEETINGS)
+    assert len(calls) == 1  # not once per channel

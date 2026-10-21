@@ -188,3 +188,31 @@ def test_videos_stay_put_when_a_fourth_venue_is_added(tmp_path, monkeypatch):
     at.multiselect[0].set_value(["22", "47", "13", "81"]).run()
     assert not at.exception, at.exception
     assert iframe_paths(at) == before
+
+
+def _fixed_height_ancestor(node, target, fixed: bool = False) -> bool | None:
+    """Whether `target` sits inside a block with a fixed pixel height (None if not found)."""
+    if node is target:
+        return fixed
+    proto = getattr(node, "proto", None)
+    height = getattr(proto, "height_config", None) if proto is not None else None
+    fixed = fixed or bool(height is not None and height.pixel_height)
+    for child in getattr(node, "children", {}).values():
+        found = _fixed_height_ancestor(child, target, fixed)
+        if found is not None:
+            return found
+    return None
+
+
+@pytest.mark.parametrize("venues", [["22", "47", "13"], ["22", "47", "13", "81"]])
+def test_changing_text_above_the_videos_has_a_fixed_height(tmp_path, monkeypatch, venues):
+    # The countdowns change every 30 seconds and venues drop out as they finish; their
+    # lines above the grid must not change its height, or the videos move on screen.
+    at = run_page(tmp_path, monkeypatch)
+    at.multiselect[0].set_value(venues).run()
+    changing = [e for e in at.caption if "あと" in e.value]
+    if len(venues) == 4:
+        changing += [e for e in at.markdown if "次の発走" in e.value]
+    assert len(changing) == (2 if len(venues) == 4 else 1)
+    for element in changing:
+        assert _fixed_height_ancestor(at._tree, element) is True
