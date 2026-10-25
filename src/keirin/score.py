@@ -40,14 +40,15 @@ TIER_OF_CLASS = {
 LADDER = ["A3", "A12", "S"]
 
 # Expected change of a rider's per-race points when the same rider races one tier
-# up / down. PROVISIONAL: 遠山競輪研究所030 (Gamboo, 2020-12), estimated on the
-# 2019-10..2020-01 class change. To be re-estimated on our own data
-# (`keirin estimate-deltas`), see docs/score-correction.md.
+# up / down. Estimated on our own data (`keirin estimate-deltas`) at the 2026-01
+# and 2026-07 class changes and pooled by inverse variance (2026-10-25), see
+# docs/score-correction.md. The earlier provisional values (遠山競輪研究所030, 2020-12)
+# were A12->S +3.80, S->A12 -3.69, A3->A12 +8.52, A12->A3 -9.42.
 STEP_DELTAS: dict[tuple[str, str], float] = {
-    ("A12", "S"): 3.80,
-    ("S", "A12"): -3.69,
-    ("A3", "A12"): 8.52,
-    ("A12", "A3"): -9.42,
+    ("A12", "S"): 6.18,
+    ("S", "A12"): -5.37,
+    ("A3", "A12"): 9.13,
+    ("A12", "A3"): -9.38,
 }
 
 # Races of the meeting a card belongs to are not in the card's score yet.

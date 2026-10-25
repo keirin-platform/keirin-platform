@@ -43,8 +43,8 @@ def test_live_card_shows_corrected_score(tmp_path, monkeypatch):
     assert first["選手"] == "山田 一郎"
     assert first["級班"] == "A1→S2"
     assert first["競走得点"] == pytest.approx(90.25)
-    assert first["補正得点"] == pytest.approx(94.05)
-    assert first["補正"] == pytest.approx(3.80)
+    assert first["補正得点"] == pytest.approx(96.43)
+    assert first["補正"] == pytest.approx(6.18)
     assert first["他級走/走数"] == "1/1"
     assert not at.warning  # the whole window is collected
 

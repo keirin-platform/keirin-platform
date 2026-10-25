@@ -15,10 +15,10 @@ def test_tier():
 
 def test_delta_walks_the_ladder():
     assert delta("S", "S") == 0
-    assert delta("A12", "S") == pytest.approx(3.80)
-    assert delta("S", "A12") == pytest.approx(-3.69)
-    assert delta("A3", "S") == pytest.approx(8.52 + 3.80)
-    assert delta("S", "A3") == pytest.approx(-3.69 - 9.42)
+    assert delta("A12", "S") == pytest.approx(6.18)
+    assert delta("S", "A12") == pytest.approx(-5.37)
+    assert delta("A3", "S") == pytest.approx(9.13 + 6.18)
+    assert delta("S", "A3") == pytest.approx(-5.37 - 9.38)
     assert delta("L", "A12") is None
     assert delta(None, "S") is None
 
@@ -48,7 +48,7 @@ def test_correct_promoted_rider():
     ]
     c = correct(95.0, "S", races, day=day, complete=True, exclude_venue="47")
     assert (c.races, c.other_tier_races) == (10, 9)
-    assert c.adjustment == pytest.approx(round(9 * 3.80 / 10, 2))
+    assert c.adjustment == pytest.approx(round(9 * 6.18 / 10, 2))
     assert c.corrected == pytest.approx(95.0 + c.adjustment)
     assert c.other_tier_share == pytest.approx(0.9)
 

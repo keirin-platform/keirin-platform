@@ -42,7 +42,7 @@ def test_live_meeting_races_and_corrected_card(tmp_path, live_client):
 
     _, _, rows = store.card(D, "99", 1)
     first = rows[0]
-    assert (first["score"], first["corrected"], first["adjustment"]) == (90.25, 94.05, 3.80)
+    assert (first["score"], first["corrected"], first["adjustment"]) == (90.25, 96.43, 6.18)
     assert (first["other_tier_races"], first["races"], first["complete"]) == (1, 1, True)
     assert first["rank_official"] == 1  # 2 riders share 90.25; car 3 has no score
     assert first["rank_corrected"] == 1
