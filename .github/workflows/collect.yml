@@ -114,9 +114,11 @@ jobs:
 
       # Past and missed formations from Oddspark: 10 s between pages (robots.txt), at most
       # 50 minutes per run. Waits until the main collection has no missing days.
+      # PAUSED (2026-10-25): Oddspark returned HTTP 403 to the Actions runner on 10/24
+      # (runs 40028582440, 40133157856). Remove `false &&` once the owner decides to resume.
       - name: Backfill lines (Oddspark)
         id: backfill_lines
-        if: ${{ !cancelled() && !inputs.lines_only && !inputs.discord_test && steps.collect.outputs.since != '' }}
+        if: ${{ false && !cancelled() && !inputs.lines_only && !inputs.discord_test && steps.collect.outputs.since != '' }}
         working-directory: code
         env:
           SINCE: ${{ steps.collect.outputs.since }}
