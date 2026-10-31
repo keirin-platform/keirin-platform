@@ -352,6 +352,30 @@ def test_car1_effect_leaves_scratched_riders_out(tmp_path):
     assert (effect["car1_races"], effect["other_races"], effect["other_win"]) == (0, 1, 1.0)
 
 
+def test_car1_effect_skips_races_without_three_placed(tmp_path):
+    scores = [95, 90, 85, 80, 75, 70, 65]
+    cancelled = [full_card(car, s, None) for car, s in enumerate(scores, 1)]
+    cards = cards_of(
+        tmp_path,
+        {
+            "01": ("day", {
+                1: ("Ａ級予選", cancelled),
+                2: ("Ａ級予選", card(scores, [2, 3])),  # two placed, the rest fell
+                3: ("Ａ級予選", card(scores, [2, 3, 1])),  # car 1 tops and finishes 3rd
+            }),
+        },
+    )  # fmt: skip
+    effect = research.car1_effect(cards, n_boot=50)
+    assert (effect["car1_races"], effect["car1_win"]) == (1, 0.0)
+
+
+def test_card_stats_keep_races_without_a_result(tmp_path):
+    scores = [95, 90, 85, 80, 75, 70, 65]
+    cancelled = [full_card(car, s, None) for car, s in enumerate(scores, 1)]
+    cards = cards_of(tmp_path, {"01": ("midnight", {1: ("Ａ級一般", cancelled)})})
+    assert research.score_order_summary(cards)["races"] == 1  # the card is set either way
+
+
 def test_cli_car_order_prints_json(tmp_path, capsys):
     write_cards(
         tmp_path,

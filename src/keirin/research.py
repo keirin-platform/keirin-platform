@@ -327,10 +327,16 @@ def _diff_ci(a: np.ndarray, b: np.ndarray, *, n_boot: int, seed: int) -> tuple[f
 
 def car1_effect(cards: list[Card], *, n_boot: int = 2000, seed: int = 0) -> dict[str, Any]:
     """Men's 7-car races outside midnight with one clear top scorer (scratched riders out):
-    does the top scorer win more often from car 1 than from the other cars?"""
+    does the top scorer win more often from car 1 than from the other cars?
+
+    Only races with at least three placed count (as in `predict.load_races`): a cancelled
+    race has no winner, so it would count the top scorer as a loss.
+    """
     rows = []  # (day, from car 1, won)
     for c in cards:
         if c.time_slot == "midnight" or c.field_size != 7 or c.group not in ("A", "S"):
+            continue
+        if sum(p is not None for p in c.finish_pos) < 3:
             continue
         active = [i for i in range(len(c.cars)) if not c.scratched[i]]
         best = max(c.scores[i] for i in active)
