@@ -211,6 +211,18 @@ def cmd_line_linkage(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_car_order(args: argparse.Namespace) -> int:
+    cards = research.load_cards(args.data_dir, args.date, args.to + timedelta(days=1))
+    result = {
+        "period": {"from": args.date.isoformat(), "to": args.to.isoformat()},
+        "score_order": research.score_order_summary(cards),
+        "convention": research.convention_summary(cards),
+        "car1_effect": research.car1_effect(cards, n_boot=args.boot),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_estimate_deltas(args: argparse.Namespace) -> int:
     estimates = analysis.estimate_deltas(args.data_dir, args.boundary, args.min_races)
     if not estimates:
@@ -411,6 +423,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_line_linkage)
+
+    p = sub.add_parser(
+        "car-order", help="car numbers vs scores and the car-1 effect (keirin-research, JSON)"
+    )
+    p.add_argument("--date", type=date.fromisoformat, required=True, help="first day")
+    p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_car_order)
 
     p = sub.add_parser("estimate-deltas", help="estimate tier deltas from a class change")
     p.add_argument("--boundary", type=date.fromisoformat, required=True, help="e.g. 2026-07-01")

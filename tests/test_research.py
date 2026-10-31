@@ -256,3 +256,111 @@ def test_cli_line_linkage_prints_aggregates_only(tmp_path, capsys):
     assert result["period"] == {"from": DAY.isoformat(), "to": DAY.isoformat()}
     assert "000001" not in out and "テスト" not in out
     assert not math.isnan(result["groups"]["all"]["expected"])
+
+
+# --- car numbers ---------------------------------------------------------------------------
+
+
+def write_cards(data_dir, day, meetings):
+    """meetings: {venue: (time_slot, {race_no: (race_class, [entry rows])})}."""
+    meeting_rows, race_rows, entries = [], [], []
+    for venue, (slot, races) in meetings.items():
+        meeting_rows.append({"date": day.isoformat(), "venue_code": venue, "time_slot": slot})
+        for race_no, (race_class, rows) in races.items():
+            race_rows.append(
+                {"date": day.isoformat(), "venue_code": venue, "race_no": race_no,
+                 "race_class": race_class, "entries": len(rows)}
+            )  # fmt: skip
+            entries += [
+                {"date": day.isoformat(), "venue_code": venue, "race_no": race_no, **r}
+                for r in rows
+            ]
+    storage.write_tables(
+        data_dir, day, {"meetings": meeting_rows, "races": race_rows, "entries": entries}
+    )
+
+
+def card(scores, finish=None):
+    """Riders 1..n with these scores; `finish` lists the finishing car numbers in order."""
+    order = finish or list(range(1, len(scores) + 1))
+    pos = {car: i + 1 for i, car in enumerate(order)}
+    return [full_card(car, s, pos.get(car)) for car, s in enumerate(scores, 1)]
+
+
+def cards_of(tmp_path, meetings):
+    write_cards(tmp_path, DAY, meetings)
+    return research.load_cards(tmp_path, DAY, DAY + timedelta(days=1))
+
+
+def test_score_order_summary(tmp_path):
+    cards = cards_of(
+        tmp_path,
+        {
+            "01": ("midnight", {1: ("Ａ級一般", card([95, 90, 85, 80, 75, 70, 65])),
+                                2: ("Ａ級一般", card([90, 95, 85, 80, 75, 70, 65]))}),
+            "02": ("night", {1: ("Ａ級一般", card([95, 90, 85, 80, 75, 70, 65]))}),
+        },
+    )  # fmt: skip
+    summary = research.score_order_summary(cards)
+    assert summary == {"races": 2, "car_order_equals_score_rank": 0.5, "car1_is_top_score": 0.5}
+
+
+def test_convention_summary(tmp_path):
+    nine = card([90, 89, 88, 80, 85, 80, 85, 90, 85])  # 4<5, 6<7 hold; 8<9 does not
+    seven_cars = card([90, 89, 88, 87, 86, 80, 85])  # 5<6 does not hold, 6<7 holds
+    cards = cards_of(
+        tmp_path,
+        {
+            "01": ("day", {1: ("Ｓ級予選", nine), 2: ("Ａ級予選", seven_cars)}),
+            "02": ("midnight", {1: ("Ａ級一般", card([95, 90, 85, 80, 75, 70, 65]))}),
+        },
+    )
+    summary = research.convention_summary(cards)
+    assert summary["9車"] == {
+        "4<5": {"races": 1, "share": 1.0},
+        "6<7": {"races": 1, "share": 1.0},
+        "8<9": {"races": 1, "share": 0.0},
+    }
+    assert summary["7車"] == {"5<6": {"races": 1, "share": 0.0}, "6<7": {"races": 1, "share": 1.0}}
+
+
+def test_car1_effect_counts_top_scorer_only(tmp_path):
+    cards = cards_of(
+        tmp_path,
+        {
+            "01": ("day", {
+                1: ("Ａ級予選", card([95, 90, 85, 80, 75, 70, 65])),  # car 1 tops and wins
+                2: ("Ａ級予選", card([85, 90, 95, 80, 75, 70, 65], [2, 3, 1, 4, 5, 6, 7])),
+                3: ("Ａ級予選", card([95, 95, 85, 80, 75, 70, 65])),  # tie at the top
+                4: ("Ｌ級ガ予", card([95, 90, 85, 80, 75, 70, 65])),  # girls
+            }),
+            "02": ("midnight", {1: ("Ａ級一般", card([95, 90, 85, 80, 75, 70, 65]))}),
+        },
+    )  # fmt: skip
+    effect = research.car1_effect(cards, n_boot=50)
+    assert (effect["car1_races"], effect["other_races"]) == (1, 1)
+    assert (effect["car1_win"], effect["other_win"], effect["diff"]) == (1.0, 0.0, 1.0)
+
+
+def test_car1_effect_leaves_scratched_riders_out(tmp_path):
+    riders = card([95, 90, 85, 80, 75, 70, 65], [2, 3, 4, 5, 6, 7])
+    riders[0]["notes"] = "欠場"
+    cards = cards_of(tmp_path, {"01": ("day", {1: ("Ａ級予選", riders)})})
+    effect = research.car1_effect(cards, n_boot=50)
+    assert (effect["car1_races"], effect["other_races"], effect["other_win"]) == (0, 1, 1.0)
+
+
+def test_cli_car_order_prints_json(tmp_path, capsys):
+    write_cards(
+        tmp_path,
+        DAY,
+        {"01": ("midnight", {1: ("Ａ級一般", card([95, 90, 85, 80, 75, 70, 65]))}),
+         "02": ("day", {1: ("Ａ級予選", card([85, 90, 95, 80, 75, 70, 65]))})},
+    )  # fmt: skip
+    args = ["car-order", "--date", DAY.isoformat(), "--to", DAY.isoformat(), "--boot", "50"]
+    assert cli.main([*args, "--data-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert set(result) == {"period", "score_order", "convention", "car1_effect"}
+    assert result["score_order"]["races"] == 1
+    assert "000001" not in out and "テスト" not in out

@@ -217,3 +217,146 @@ def linkage_summary(
             "decision": decide(ci, (first, second), LINKAGE_PRACTICAL),
         }
     return {"groups": groups}
+
+
+# --- car numbers ---------------------------------------------------------------------------
+
+CAR1_PRACTICAL = 0.03  # win rate of the top scorer, car 1 minus the other cars
+CONVENTION_PAIRS = {9: ((4, 5), (6, 7), (8, 9)), 7: ((5, 6), (6, 7))}
+
+
+@dataclass(frozen=True)
+class Card:
+    day: date
+    time_slot: str
+    field_size: int
+    group: str | None
+    cars: tuple[int, ...]
+    scores: tuple[float, ...]
+    finish_pos: tuple[int | None, ...]  # None: scratched, disqualified, fell, ...
+    scratched: tuple[bool, ...]
+
+
+def load_cards(data_dir: Path, start: date, end: date) -> list[Card]:
+    """Race cards of start <= day < end in which every rider has a score."""
+    out = []
+    for path in sorted((data_dir / "tables" / "entries").glob("*/*.csv")):
+        day = date.fromisoformat(path.stem)
+        if day < start or day >= end:
+            continue
+        slots = {
+            r["venue_code"]: r["time_slot"]
+            for r in predict._read(table_path(data_dir, "meetings", day))
+        }
+        races = {
+            (r["venue_code"], r["race_no"]): r
+            for r in predict._read(table_path(data_dir, "races", day))
+        }
+        entries: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+        for r in predict._read(path):
+            entries[(r["venue_code"], r["race_no"])].append(r)
+        for key in sorted(entries, key=lambda k: (k[0], int(k[1]))):
+            rows = sorted(entries[key], key=lambda r: int(r["car_no"]))
+            race = races.get(key)
+            if race is None or any(r["score"] == "" for r in rows):
+                continue
+            out.append(
+                Card(
+                    day,
+                    slots.get(key[0], ""),
+                    int(race["entries"]),
+                    predict.group_of(race["race_class"]),
+                    tuple(int(r["car_no"]) for r in rows),
+                    tuple(float(r["score"]) for r in rows),
+                    tuple(int(r["finish_pos"]) if r["finish_pos"] else None for r in rows),
+                    tuple(predict._scratched(r) for r in rows),
+                )
+            )
+    return out
+
+
+def _share(hits: list[bool]) -> float | None:
+    return _value(sum(hits) / len(hits)) if hits else None
+
+
+def score_order_summary(cards: list[Card]) -> dict[str, Any]:
+    """Midnight cards: car numbers in score order (ties either way) and car 1 on top."""
+    midnight = [c for c in cards if c.time_slot == "midnight"]
+    ordered = [all(a >= b for a, b in zip(c.scores, c.scores[1:], strict=False)) for c in midnight]
+    top = [c.scores[c.cars.index(1)] == max(c.scores) for c in midnight if 1 in c.cars]
+    return {
+        "races": len(midnight),
+        "car_order_equals_score_rank": _share(ordered),
+        "car1_is_top_score": _share(top),
+    }
+
+
+def convention_summary(cards: list[Card]) -> dict[str, Any]:
+    """Outside midnight: share of cards where the lower car of a pair has the lower score."""
+    out: dict[str, Any] = {}
+    for size, pairs in CONVENTION_PAIRS.items():
+        out[f"{size}車"] = {}
+        for low, high in pairs:
+            hits = [
+                c.scores[c.cars.index(low)] < c.scores[c.cars.index(high)]
+                for c in cards
+                if c.time_slot != "midnight"
+                and c.field_size == size
+                and low in c.cars
+                and high in c.cars
+            ]
+            out[f"{size}車"][f"{low}<{high}"] = {"races": len(hits), "share": _share(hits)}
+    return out
+
+
+def _diff_ci(a: np.ndarray, b: np.ndarray, *, n_boot: int, seed: int) -> tuple[float, float]:
+    if len(a) == 0 or len(b) == 0:
+        return (math.nan, math.nan)
+    rng = np.random.default_rng(seed)
+    diffs = [
+        a[rng.integers(0, len(a), len(a))].mean() - b[rng.integers(0, len(b), len(b))].mean()
+        for _ in range(n_boot)
+    ]
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return float(lo), float(hi)
+
+
+def car1_effect(cards: list[Card], *, n_boot: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """Men's 7-car races outside midnight with one clear top scorer (scratched riders out):
+    does the top scorer win more often from car 1 than from the other cars?"""
+    rows = []  # (day, from car 1, won)
+    for c in cards:
+        if c.time_slot == "midnight" or c.field_size != 7 or c.group not in ("A", "S"):
+            continue
+        active = [i for i in range(len(c.cars)) if not c.scratched[i]]
+        best = max(c.scores[i] for i in active)
+        tops = [i for i in active if c.scores[i] == best]
+        if len(tops) == 1:
+            rows.append((c.day, c.cars[tops[0]] == 1, c.finish_pos[tops[0]] == 1))
+    days = np.array([d for d, _, _ in rows], dtype=object)
+    car1 = np.array([one for _, one, _ in rows], dtype=bool)
+    won = np.array([w for _, _, w in rows], dtype=float)
+
+    def diff(mask: np.ndarray) -> float:
+        a, b = won[mask & car1], won[mask & ~car1]
+        return _mean(a) - _mean(b) if len(a) and len(b) else math.nan
+
+    everyone = np.ones(len(rows), bool)
+    if rows:
+        median = statistics.median_low(days.tolist())
+        first, second = diff(days <= median), diff(days > median)
+    else:
+        first = second = math.nan
+    ci = _diff_ci(won[car1], won[~car1], n_boot=n_boot, seed=seed)
+    return {
+        "races": len(rows),
+        "car1_races": int(car1.sum()),
+        "other_races": int((~car1).sum()),
+        "car1_win": _value(_mean(won[car1])),
+        "other_win": _value(_mean(won[~car1])),
+        "diff": _value(diff(everyone)),
+        "ci95": [_value(v) for v in ci],
+        "first_half": _value(first),
+        "second_half": _value(second),
+        "decision": decide(ci, (first, second), CAR1_PRACTICAL),
+    }
