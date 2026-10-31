@@ -1,6 +1,8 @@
 import csv
+import inspect
 import json
 import math
+import re
 from datetime import date, timedelta
 
 import numpy as np
@@ -78,6 +80,11 @@ def model_for(*groups):
     theta = np.zeros(N_PARAMS)
     theta[predict.CARD_FEATURES.index("score")] = 0.1
     return Model({g: theta for g in groups}, {}, None, None)
+
+
+def test_research_uses_only_public_predict_names():
+    """research.py shares predict's helpers; private ones could change without notice."""
+    assert re.findall(r"predict\._\w+", inspect.getsource(research)) == []
 
 
 # --- pair probabilities -----------------------------------------------------------------
