@@ -183,8 +183,8 @@ uv run keirin estimate-deltas --boundary 2026-07-01 --data-dir ../keirin-data   
 uv run keirin rating --as-of 2026-11-01 --top 20 --data-dir ../keirin-data              # レーティング上位
 uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --rating --data-dir ../keirin-data  # レーティングも評価
 uv run keirin predict-eval --date 2026-09-28 --to 2026-10-04 --data-dir ../keirin-data   # 予想の評価（前日までで学習）
-uv run keirin line-linkage --date 2026-10-05 --to 2026-10-31 --data-dir ../keirin-data   # ラインの連動の検証（keirin-research、JSON）
-uv run keirin car-order --date 2025-08-24 --to 2026-10-31 --data-dir ../keirin-data      # 車番の配置と1番車の効果（keirin-research、JSON）
+uv run keirin line-linkage --date 2026-10-05 --to 2026-10-30 --data-dir ../keirin-data   # ラインの連動の検証（keirin-research の LAW-001、JSON）
+uv run keirin car-order --date 2025-08-24 --to 2026-10-30 --data-dir ../keirin-data      # 車番の配置と1番車の効果（keirin-research の RULE-004・005、CAND-031、JSON）
 YOUTUBE_API_KEY=... uv run keirin public-streams --out streams.json   # 公開版マルチビューの配信一覧（YouTube だけ）
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
@@ -307,6 +307,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   - `keirin public-streams` と公開版用の検索（`find_all_streams`）は使われなくなった。消すかどうかは、keirin-multiviewer の扱いと一緒に決める。
 - 2026-11-01 **競輪の共通認識を Public の keirin-research に置いた**（オーナーの要望 11.）。登録は自分たちのデータで確かめたものだけ、判断がつかないものは候補として保留、封印期間なし、観察記録は keirin-data（オーナー決定）。
   「分析するときの前提」の節と docs/keirin-theories.md は keirin-research に移し、ここにはリンクだけを残した。
+- 2026-11-01 keirin-research v1 の最終レビューの指摘を直した。`research.decide` は、区間が ±実質的な大きさの内側なら、0を含まなくても「実質的な差なし」を優先する（設計書 §7.3 の否定「あっても実用上は無視できる」に合わせた設計者の判断。keirin-research の COMMIT-002 にも書いた）。
+  1番車の効果（`car1_effect`）は3着までが決まったレースだけで数える（中止のレースで得点1位を負けに数えていた）。18,498 → 18,478 レースで、判断は保留のまま。
+  research.py が使う predict の関数（`utilities`、`read_rows`、`is_scratched`、`close_gaps`）は公開の名前にした。
 - 2026-11-01 リポジトリの設定が squash だけになっていた（2026-10-31 19:53 UTC に変わった）ので、オーナーの判断で merge commit を許可に戻した（rebase は不許可のまま）。
 
 ## 現状と TODO

@@ -84,7 +84,8 @@ def _num(value: Any) -> float | None:
         return None
 
 
-def _scratched(row: dict[str, Any]) -> bool:
+def is_scratched(row: dict[str, Any]) -> bool:
+    """The rider is scratched (欠場, 欠車) on the race card. research.py uses it too."""
     return "欠" in (row.get("notes") or "")
 
 
@@ -168,7 +169,7 @@ def _guess_input(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _close_gaps(by_car: dict[int, dict[str, Any]], scratched: set[int]) -> dict[int, dict]:
+def close_gaps(by_car: dict[int, dict[str, Any]], scratched: set[int]) -> dict[int, dict]:
     """Line positions once the scratched riders are taken out."""
     members: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for car, info in by_car.items():
@@ -201,7 +202,8 @@ def _alone(by_car: dict[int, dict[str, Any]], cars: list[int]) -> dict[int, dict
 # --- the model -------------------------------------------------------------------------
 
 
-def _utilities(theta: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def utilities(theta: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """u1 (1st), u23 (2nd and 3rd) and the temperatures (t2, t3). research.py uses it too."""
     base = x[..., :KC] @ theta[:KC]
     u1 = base + x[..., KC:] @ theta[KC:K]
     u23 = base + x[..., KC:] @ theta[K : K + KL]
@@ -215,7 +217,7 @@ def _objective(
 
     x: (races, width, K), mask: rider present, order: rows of the 1st..3rd (-1: none).
     """
-    u1, u23, (t2, t3) = _utilities(theta, x)
+    u1, u23, (t2, t3) = utilities(theta, x)
     available = mask.copy()
     loglik, grad = 0.0, np.zeros_like(theta)
     for stage, (u, t) in enumerate(((u1, 1.0), (u23, t2), (u23, t3))):
@@ -245,7 +247,7 @@ def _objective(
 
 def race_probabilities(theta: np.ndarray, x: np.ndarray) -> np.ndarray:
     """(riders, 3): probabilities of winning, of the top 2 and of the top 3."""
-    u1, u23, (t2, t3) = _utilities(theta, x)
+    u1, u23, (t2, t3) = utilities(theta, x)
     n = len(x)
 
     def draw(u: np.ndarray, left: np.ndarray) -> np.ndarray:
@@ -343,7 +345,8 @@ def fit(
 # --- training data -----------------------------------------------------------------------
 
 
-def _read(path: Path) -> list[dict[str, str]]:
+def read_rows(path: Path) -> list[dict[str, str]]:
+    """Rows of a collected CSV table (empty when the file is missing)."""
     if not path.exists():
         return []
     with path.open(encoding="utf-8") as f:
@@ -365,24 +368,24 @@ def load_races(data_dir: Path, start: date | None = None, end: date | None = Non
             continue
         classes = {
             (r["venue_code"], r["race_no"]): r["race_class"]
-            for r in _read(table_path(data_dir, "races", day))
+            for r in read_rows(table_path(data_dir, "races", day))
         }
         formations: dict[tuple[str, str], dict[int, dict[str, Any]]] = defaultdict(dict)
-        for r in _read(table_path(data_dir, "lines", day)):
+        for r in read_rows(table_path(data_dir, "lines", day)):
             formations[(r["venue_code"], r["race_no"])][int(r["car_no"])] = {
                 "line_no": int(r["line_no"]),
                 "line_pos": int(r["line_pos"]),
                 "line_size": int(r["line_size"]),
             }
         races: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
-        for r in _read(path):
+        for r in read_rows(path):
             races[(r["venue_code"], r["race_no"])].append(r)
         for key in sorted(races, key=lambda k: (k[0], int(k[1]))):
             group = group_of(classes.get(key))
-            riders = [r for r in races[key] if not _scratched(r)]
+            riders = [r for r in races[key] if not is_scratched(r)]
             if group is None or len(riders) < 3 or any(r["score"] == "" for r in riders):
                 continue
-            scratched = {int(r["car_no"]) for r in races[key] if _scratched(r)}
+            scratched = {int(r["car_no"]) for r in races[key] if is_scratched(r)}
             placed = sorted(
                 (int(r["finish_pos"]), int(r["car_no"]), i)
                 for i, r in enumerate(riders)
@@ -393,7 +396,7 @@ def load_races(data_dir: Path, start: date | None = None, end: date | None = Non
             if group == "L":
                 by_car = {}  # no lines in girls' keirin
             elif key in formations:
-                by_car = _close_gaps(formations[key], scratched)
+                by_car = close_gaps(formations[key], scratched)
             else:
                 by_car = _by_car(guess_formation([_guess_input(r) for r in riders]))
             order = tuple(i for _, _, i in placed[:3])
@@ -499,15 +502,15 @@ def predict_race(
     group = group_of(race_class)
     if group is None or group not in model.params:
         return None
-    riders = [r for r in rows if not _scratched(r)]
+    riders = [r for r in rows if not is_scratched(r)]
     if len(riders) < 2:
         return None
-    scratched = sorted(int(r["car_no"]) for r in rows if _scratched(r))
+    scratched = sorted(int(r["car_no"]) for r in rows if is_scratched(r))
     cars = [int(r["car_no"]) for r in riders]
     if group == "L":
         lines, guessed = {}, False  # no lines in girls' keirin
     elif by_car:
-        lines, guessed = _close_gaps({int(c): v for c, v in by_car.items()}, set(scratched)), False
+        lines, guessed = close_gaps({int(c): v for c, v in by_car.items()}, set(scratched)), False
     else:
         lines, guessed = _by_car(guess_formation([_guess_input(r) for r in riders])), True
     lines = _alone(lines, cars)

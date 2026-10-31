@@ -39,14 +39,18 @@ def bootstrap_ci(values: np.ndarray, *, n_boot: int = 2000, seed: int = 0) -> tu
 
 
 def decide(ci: tuple[float, float], halves: tuple[float, float], practical: float) -> str:
-    """正の効果 / 負の効果 / 実質的な差なし / 保留 (keirin-research COMMIT-002)."""
+    """正の効果 / 負の効果 / 実質的な差なし / 保留 (keirin-research COMMIT-002).
+
+    An interval inside ±practical is 実質的な差なし even when it excludes 0: the effect
+    may exist, but it is too small to use.
+    """
     lo, hi = ci
+    if -practical < lo and hi < practical:
+        return "実質的な差なし"
     if lo > 0 and all(h > 0 for h in halves):
         return "正の効果"
     if hi < 0 and all(h < 0 for h in halves):
         return "負の効果"
-    if -practical < lo and hi < practical:
-        return "実質的な差なし"
     return "保留"
 
 
@@ -59,7 +63,7 @@ def pair_top3_probabilities(theta: np.ndarray, x: np.ndarray) -> np.ndarray:
     The same stages as `predict.race_probabilities`: 1st from u1, 2nd from t2 * u23 and
     3rd from t3 * u23, summed over every ordered top 3.
     """
-    u1, u23, (t2, t3) = predict._utilities(theta, x)
+    u1, u23, (t2, t3) = predict.utilities(theta, x)
     n = len(x)
 
     def draw(u: np.ndarray, left: np.ndarray) -> np.ndarray:
@@ -105,17 +109,17 @@ def load_linkage_races(
         if day < start or day >= end:
             continue
         formations: dict[tuple[str, str], dict[int, dict[str, Any]]] = defaultdict(dict)
-        for r in predict._read(path):
+        for r in predict.read_rows(path):
             formations[(r["venue_code"], r["race_no"])][int(r["car_no"])] = {
                 "line_no": int(r["line_no"]),
                 "line_pos": int(r["line_pos"]),
             }
         classes = {
             (r["venue_code"], r["race_no"]): r["race_class"]
-            for r in predict._read(table_path(data_dir, "races", day))
+            for r in predict.read_rows(table_path(data_dir, "races", day))
         }
         entries: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
-        for r in predict._read(table_path(data_dir, "entries", day)):
+        for r in predict.read_rows(table_path(data_dir, "entries", day)):
             entries[(r["venue_code"], r["race_no"])].append(r)
         for key in sorted(formations, key=lambda k: (k[0], int(k[1]))):
             group = predict.group_of(classes.get(key))
@@ -134,7 +138,7 @@ def _linkage_race(
     formation: dict[int, dict[str, Any]],
     theta: np.ndarray,
 ) -> LinkageRace | None:
-    riders = [r for r in rows if not predict._scratched(r)]
+    riders = [r for r in rows if not predict.is_scratched(r)]
     if len(riders) < 3 or any(r["score"] == "" for r in riders):
         return None
     placed = sorted(
@@ -142,8 +146,8 @@ def _linkage_race(
     )
     if len(placed) < 3:
         return None
-    scratched = {int(r["car_no"]) for r in rows if predict._scratched(r)}
-    by_car = predict._close_gaps(formation, scratched)
+    scratched = {int(r["car_no"]) for r in rows if predict.is_scratched(r)}
+    by_car = predict.close_gaps(formation, scratched)
     cars = [int(r["car_no"]) for r in riders]
     n = len(riders)
     same = np.zeros((n, n), bool)
@@ -246,14 +250,14 @@ def load_cards(data_dir: Path, start: date, end: date) -> list[Card]:
             continue
         slots = {
             r["venue_code"]: r["time_slot"]
-            for r in predict._read(table_path(data_dir, "meetings", day))
+            for r in predict.read_rows(table_path(data_dir, "meetings", day))
         }
         races = {
             (r["venue_code"], r["race_no"]): r
-            for r in predict._read(table_path(data_dir, "races", day))
+            for r in predict.read_rows(table_path(data_dir, "races", day))
         }
         entries: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
-        for r in predict._read(path):
+        for r in predict.read_rows(path):
             entries[(r["venue_code"], r["race_no"])].append(r)
         for key in sorted(entries, key=lambda k: (k[0], int(k[1]))):
             rows = sorted(entries[key], key=lambda r: int(r["car_no"]))
@@ -269,7 +273,7 @@ def load_cards(data_dir: Path, start: date, end: date) -> list[Card]:
                     tuple(int(r["car_no"]) for r in rows),
                     tuple(float(r["score"]) for r in rows),
                     tuple(int(r["finish_pos"]) if r["finish_pos"] else None for r in rows),
-                    tuple(predict._scratched(r) for r in rows),
+                    tuple(predict.is_scratched(r) for r in rows),
                 )
             )
     return out
@@ -323,10 +327,16 @@ def _diff_ci(a: np.ndarray, b: np.ndarray, *, n_boot: int, seed: int) -> tuple[f
 
 def car1_effect(cards: list[Card], *, n_boot: int = 2000, seed: int = 0) -> dict[str, Any]:
     """Men's 7-car races outside midnight with one clear top scorer (scratched riders out):
-    does the top scorer win more often from car 1 than from the other cars?"""
+    does the top scorer win more often from car 1 than from the other cars?
+
+    Only races with at least three placed count (as in `predict.load_races`): a cancelled
+    race has no winner, so it would count the top scorer as a loss.
+    """
     rows = []  # (day, from car 1, won)
     for c in cards:
         if c.time_slot == "midnight" or c.field_size != 7 or c.group not in ("A", "S"):
+            continue
+        if sum(p is not None for p in c.finish_pos) < 3:
             continue
         active = [i for i in range(len(c.cars)) if not c.scratched[i]]
         best = max(c.scores[i] for i in active)
