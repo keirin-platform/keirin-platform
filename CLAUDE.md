@@ -60,7 +60,7 @@
 3. **戦った相手の強さを考慮した評価**（2026-10-03）。オーナーの判断で**レーティング方式**（Plackett–Luce）で進める。
    詳しくは [docs/rating.md](docs/rating.md)。精度が公式の得点を上回ったら、ビューアに列を足す。
 
-4. **競輪の通説・セオリーの調査**（2026-10-03）→ [docs/keirin-theories.md](docs/keirin-theories.md)。根拠の強さ、私たちのデータでの簡易集計、検証の優先順位をまとめた。記事の分析テーマの元ネタ。
+4. **競輪の通説・セオリーの調査**（2026-10-03）→ keirin-research の [candidates/](https://github.com/keirin-platform/keirin-research/tree/main/candidates)（2026-11-01 に docs/keirin-theories.md から移した）。根拠の強さ、私たちのデータでの簡易集計、確かめ直す時期をまとめた。記事の分析テーマの元ネタ。
 
 5. **GitHub 上の競輪関連リポジトリの調査**（2026-10-04）→ [docs/github-keirin-repos.md](docs/github-keirin-repos.md)。
    私たちに最も近いのは Tower2007/keirin-ai（keirin.jp から蓄積、LightGBM、shadow 評価）。どのリポジトリもライセンスがないので、コードは流用しない。
@@ -96,6 +96,13 @@
     - **方針（オーナー指定）: 検証のために、過去へ遡って収集する**。10/24 ごろに backfill が終わっても期間は約1.3倍にしかならず、足りないため。
       遡る範囲とペース（2015年まで取れる）は未定。サイトへのアクセスが増えるので、決める前にオーナーと相談する（「控えめな収集」の方針、Actions の minutes の上限に注意）。
 
+11. **競輪の共通認識を AI に持たせる（keirin-research）**（2026-11-01）。AI の競輪の知識は実用的とは言えず、単純な連対率で予想を組み立て、ラインの連動をオーナーが持ち込む必要があった。
+    基本を、作業を始める時点で AI が知っているように、新しい Public リポジトリ [keirin-platform/keirin-research](https://github.com/keirin-platform/keirin-research) に知識とスキルを置いた（Claude Code と Codex の両方から読む）。
+    設計は [docs/superpowers/specs/2026-11-01-keirin-research-design.md](docs/superpowers/specs/2026-11-01-keirin-research-design.md)、計画は [docs/superpowers/plans/2026-11-01-keirin-research.md](docs/superpowers/plans/2026-11-01-keirin-research.md)。
+    - 広く知られている法則を自分たちのデータで確かめてから登録し、判断がつかないものは候補として保留する（オーナー決定）。封印期間は設けず、登録のあとのデータで確かめ直す（オーナー決定）。
+    - 個人差は「あるかどうか」だけを登録し、選手の名前は出さない（オーナー決定）。観察記録はレースを特定できるので keirin-data の `observations.md` に置く（オーナー決定）。
+    - 検証のスクリプトはこのリポジトリの `research.py`（`keirin line-linkage`、`keirin car-order`）。ラインの連動は確認済み（LAW-001）、1番車の位置の有利は保留。
+
 ## 構成
 
 ```
@@ -103,6 +110,7 @@ keirin-platform/keirin-platform (Public)   ← このリポジトリ。コード
   └─ .github/workflows/collect.yml          再利用可能ワークフロー（収集ロジック本体）
 keirin-platform/keirin-data (Private)      ← 収集データの置き場
 keirin-platform/keirin-blog (Private)      ← はてなブログの記事（blog-sync.yml を呼ぶ caller。docs/blog.md）
+keirin-platform/keirin-research (Public)   ← 競輪の共通認識（知識とスキル）。Claude Code と Codex から読む
 keirin-platform/keirin-multiviewer (Private) ← 公開版マルチビュー（2026-10-22 に非公開にした。Pages は停止、deploy.yml は無効）
 keirin-platform/.github (Public)           ← 組織のプロフィール（profile/README.md）。公開してよい内容だけを書く
                                              （Private リポジトリ、ビューアの URL、内部 API の詳細には触れない）
@@ -142,12 +150,11 @@ Streamlit Community Cloud (無料)           ← 出走表ビューア。デー�
   - 取得済みの日は再取得しない（`--force` を付けない限り）。テーブルは raw から作り直す（`keirin rebuild`）。
   - オッズの時系列収集のように頻度が上がるものは、追加する前に負荷をよく考える。
 
-## 分析するときの前提（車番の付け方）
+## 競輪のドメイン知識
 
-- **ミッドナイトは、競走得点の高い順に1番車から並ぶ**（オーナー情報。データでも96.2%のレースで車番＝得点順位、1番車は100%得点1位）。
-- **4・6・8番車には、同じ枠の相方（5・7・9番車）より実力が劣る選手を置く慣例がある**（枠連の釣り合いのためとみられる。オーナーの指摘）。
-  データでは、9車で 4<5、6<7、8<9 がどれも 100%、7車（枠連は売らない）でも 6<7 が 95.7%。
-- したがって「1番車有利」「4・6・8番車は来ない」は位置の効果ではなく、実力の配置の効果。車番を分析するときは、得点とミッドナイトかどうかをそろえる。
+車番の付け方、ライン、得点の尺度、データの性質、検証した法則と保留の候補は [keirin-research](https://github.com/keirin-platform/keirin-research) にある（2026-11-01 にこの節から移した）。
+分析・予想・記事の前に、そのスキル（`keirin-research:keirin-knowledge` など。`~/.claude/skills/keirin-research` に入れてある）か、keirin-research の AGENTS.md の地図から読む。
+新しく確かめたことは、経緯をこのリポジトリの docs に、事実を keirin-research に登録する（`registering-keirin-knowledge`）。
 
 ## 技術スタック
 
@@ -298,6 +305,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   - プリセットはチャンネル ID と、タイトルを候補に振り分ける規則だけ。競輪の規則は `keirin.youtube.match_venue` と同じ振り分けになる（施行者の表記、in、予想、高松宮）。オートレースは公式チャンネル（全場の本中継）を最優先にし、各場の自前の配信と予想の裏配信は、自動では枠に入れない候補にした（オーナー指定）。
   - 試作で分かったこと: チャンネル指定の埋め込み（`/embed/live_stream?channel=`）は使えない。拡張機能のページからの埋め込みはエラー 153 で使えない。チャンネルの `/live`（普通の再生ページ）はライブ中・予約中の配信に飛ぶが、iframe には入れられない。
   - `keirin public-streams` と公開版用の検索（`find_all_streams`）は使われなくなった。消すかどうかは、keirin-multiviewer の扱いと一緒に決める。
+- 2026-11-01 **競輪の共通認識を Public の keirin-research に置いた**（オーナーの要望 11.）。登録は自分たちのデータで確かめたものだけ、判断がつかないものは候補として保留、封印期間なし、観察記録は keirin-data（オーナー決定）。
+  「分析するときの前提」の節と docs/keirin-theories.md は keirin-research に移し、ここにはリンクだけを残した。
+- 2026-11-01 リポジトリの設定が squash だけになっていた（2026-10-31 19:53 UTC に変わった）ので、オーナーの判断で merge commit を許可に戻した（rebase は不許可のまま）。
 
 ## 現状と TODO
 
@@ -306,7 +316,7 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [x] keirin-data リポジトリの作成と、caller ワークフローの設置（2026-10-02）
 - [x] GitHub Actions（海外の IP）から keirin.jp に届くことを確認（2026-10-02。ローカル実行と出力が完全に一致し、データのコミットは Verified）
 - [ ] backfill: 2025-12-01 から（2026-10-02 に開始。日次ジョブが自動で進め、10/24 ごろに完了する見込み）
-- [ ] 記事用の分析（backfill の完了後。テーマ案は「オーナーの要望」2. と docs/keirin-theories.md を参照）
+- [ ] 記事用の分析（backfill の完了後。テーマ案は「オーナーの要望」2. と keirin-research の [candidates/](https://github.com/keirin-platform/keirin-research/tree/main/candidates) を参照）
 - [ ] 分析の準備: 場→都道府県とバンクの諸元（周長、みなし直線）を、コードのデータとして持つ
 - [x] ライン（並び）の収集（2026-10-05）。これから先の分は keirin.jp（当日・翌日の JSJ017 の nInfo、毎回と、並びだけの実行 11:13・15:13・18:13）、過去分と取りこぼしはオッズパーク（10秒間隔、1回50分まで）。docs/lines.md
 - [ ] オッズパークの並びの backfill（**2026-10-25 に一時停止**。10/24 に Actions の IP から HTTP 403 が返り、collect が2回失敗したため。collect.yml のステップを `false &&` で無効化。2026-11-01 の調査で、手元からは取れると分かった。再開は、このマシンのほかの backfill が落ち着いてから再検討する）（メインの backfill が終わる 10/24 ごろに自動で始まり、2027-01 中旬〜下旬にそろう見込み）
@@ -354,4 +364,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [ ] （保留）公開版マルチビュー: 最終レビューの細かい指摘（後回し）。URL を書き換えたあと入れる枠を選ぶと前の URL が入る、streams.json が想定外の形だとページが止まる、
   httpx などの依存の版を固定していない、長い場名（ブッキースタジアム岸和田など）が帯の幅を取る、ページのブラウザ確認が手動だけ
 - [x] 公開版マルチビューを組織のプロフィール（.github の profile/README.md）に載せた（2026-10-22、keirin-platform/.github#2）。同日、非公開にしたので外した（#3）。MIT ライセンスの記載は残した
+- [x] keirin-research v1（2026-11-01。オーナーの要望 11.）。知識 53件、候補 35件、スキル5つ。評価（T1〜T8）はまだ回していない（API キーが要るため。オーナー判断で後回し）
+- [ ] keirin-research: 遡りが終わる 2026-12 下旬に、雨・風の個人差（CAND-020）と 1番車の効果（CAND-031）など、候補を確かめ直す
+- [ ] keirin-research: 本物の並びが半年分たまる 2027-04 ごろ（オッズパークの取得が再開すれば早まる）に、ライン関係の候補を確かめる。ラインの連動（LAW-001）は位置の効果を入れたモデルとも比べる
+- [ ] keirin-research: 評価（`claude plugin eval`、T1〜T8）を回す（API キーを用意したとき）
+- [ ] 検討: このリポジトリに AGENTS.md を作り、Codex からも keirin-research を指す
 - [ ] オーナーから機能の要望を受けたら、ここに追記する
