@@ -1,6 +1,6 @@
 # ライン（並び）データの取得
 
-ライン関係の通説（番手有利、3番手、単騎、競り、ラインワンツー。docs/keirin-theories.md）を検証するには、各レースの並びが必要。
+ライン関係の通説（番手有利、3番手、単騎、競り、ラインワンツー。keirin-research の [candidates/lines.md](https://github.com/keirin-platform/keirin-research/blob/main/candidates/lines.md)）を検証するには、各レースの並びが必要。
 keirin.jp の結果データには並びが残らない（レース後は空になる）ので、取得元を調べた（2026-10-05）。
 
 ## 取得元
