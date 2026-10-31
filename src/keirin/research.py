@@ -39,14 +39,18 @@ def bootstrap_ci(values: np.ndarray, *, n_boot: int = 2000, seed: int = 0) -> tu
 
 
 def decide(ci: tuple[float, float], halves: tuple[float, float], practical: float) -> str:
-    """正の効果 / 負の効果 / 実質的な差なし / 保留 (keirin-research COMMIT-002)."""
+    """正の効果 / 負の効果 / 実質的な差なし / 保留 (keirin-research COMMIT-002).
+
+    An interval inside ±practical is 実質的な差なし even when it excludes 0: the effect
+    may exist, but it is too small to use.
+    """
     lo, hi = ci
+    if -practical < lo and hi < practical:
+        return "実質的な差なし"
     if lo > 0 and all(h > 0 for h in halves):
         return "正の効果"
     if hi < 0 and all(h < 0 for h in halves):
         return "負の効果"
-    if -practical < lo and hi < practical:
-        return "実質的な差なし"
     return "保留"
 
 

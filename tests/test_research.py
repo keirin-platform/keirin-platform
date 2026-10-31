@@ -180,6 +180,8 @@ def test_placebo_equals_actual_when_everyone_is_one_line():
         ((-0.02, 0.03), (0.01, -0.01), "実質的な差なし"),
         ((0.01, 0.3), (0.2, -0.1), "保留"),
         ((0.1, 0.3), (0.2, -0.1), "保留"),
+        ((0.01, 0.04), (0.02, 0.03), "実質的な差なし"),  # excludes 0 but negligible
+        ((-0.04, -0.01), (-0.02, -0.03), "実質的な差なし"),
     ],
 )
 def test_decide(ci, halves, expected):
