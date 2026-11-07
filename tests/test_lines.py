@@ -237,6 +237,49 @@ def test_oddspark_refusal_stops(tmp_path):
         client.race_page("84", DAY, 1)
 
 
+def test_oddspark_retries_a_dropped_connection_with_growing_waits(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) <= 3:
+            raise httpx.ConnectError("EOF occurred in violation of protocol")
+        return httpx.Response(200, text=oddspark_block("1/2"))
+
+    fake = FakeTime()
+    client = lines.OddsparkClient(
+        transport=httpx.MockTransport(handler), sleep=fake.sleep, clock=fake.clock
+    )
+    assert "keirinRyosouline" in client.race_page("84", DAY, 1)
+    assert len(calls) == 4
+    assert fake.now == pytest.approx(30 + 120 + 300)  # waits before the 2nd, 3rd and 4th try
+
+
+def test_oddspark_gives_up_after_the_last_retry(tmp_path):
+    def handler(request):
+        raise httpx.ConnectError("EOF")
+
+    fake = FakeTime()
+    client = lines.OddsparkClient(
+        transport=httpx.MockTransport(handler), sleep=fake.sleep, clock=fake.clock
+    )
+    with pytest.raises(KeirinApiError, match="gave up after 4 attempts"):
+        client.race_page("84", DAY, 1)
+
+
+def test_oddspark_throttling_is_not_retried(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(429)
+
+    client = lines.OddsparkClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(KeirinApiError, match="429"):
+        client.race_page("84", DAY, 1)
+    assert len(calls) == 1
+
+
 def test_missing_main_days(tmp_path):
     storage.write_raw(tmp_path, {"date": "2026-10-03", "responses": []})
     assert lines.missing_main_days(tmp_path, date(2026, 10, 2), date(2026, 10, 3)) == [

@@ -46,6 +46,9 @@ COLUMNS = [
 ]  # fmt: skip
 ODDSPARK_RACE_URL = "https://www.oddspark.com/keirin/RaceList.do"
 ODDSPARK_INTERVAL = 10.0  # robots.txt Crawl-delay
+# Waits before each retry of a dropped connection or a 5xx (a long run must survive a blip).
+# Refusals (403, 429, other 4xx) are never retried.
+ODDSPARK_RETRY_WAITS = (30.0, 120.0, 300.0)
 
 Position = tuple[int, ...]  # more than one car = contested position (競り)
 
@@ -355,7 +358,7 @@ class OddsparkClient:
         *,
         min_interval: float = ODDSPARK_INTERVAL,
         timeout: float = 30.0,
-        max_retries: int = 2,
+        retry_waits: tuple[float, ...] = ODDSPARK_RETRY_WAITS,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -364,7 +367,7 @@ class OddsparkClient:
             headers={"User-Agent": USER_AGENT}, timeout=timeout, transport=transport
         )
         self._min_interval = min_interval
-        self._max_retries = max_retries
+        self._retry_waits = retry_waits
         self._sleep = sleep
         self._clock = clock
         self._last: float | None = None
@@ -372,7 +375,8 @@ class OddsparkClient:
 
     def race_page(self, venue_code: str, day: date, race_no: int) -> str:
         params = {"joCode": venue_code, "kaisaiBi": day.strftime("%Y%m%d"), "raceNo": race_no}
-        for attempt in range(1, self._max_retries + 1):
+        attempts = len(self._retry_waits) + 1
+        for attempt in range(1, attempts + 1):
             if self._last is not None:
                 wait = self._min_interval - (self._clock() - self._last)
                 if wait > 0:
@@ -389,9 +393,11 @@ class OddsparkClient:
                 if resp.status_code < 500:
                     raise KeirinApiError(f"Oddspark: HTTP {resp.status_code}")
                 error = f"HTTP {resp.status_code}"
-            if attempt == self._max_retries:
+            if attempt == attempts:
                 raise KeirinApiError(f"Oddspark: {error} (gave up after {attempt} attempts)")
-            log.warning("Oddspark: %s, retrying", error)
+            wait = self._retry_waits[attempt - 1]
+            log.warning("Oddspark: %s, retrying in %.0f s", error, wait)
+            self._sleep(wait)
         raise AssertionError("unreachable")
 
 
