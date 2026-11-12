@@ -211,6 +211,18 @@ def cmd_line_linkage(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chase_break(args: argparse.Namespace) -> int:
+    rows = research.load_chase_rows(args.data_dir, args.date, args.to + timedelta(days=1))
+    result = {
+        "period": {"from": args.date.isoformat(), "to": args.to.isoformat()},
+        "effect": research.chase_effect(rows, n_boot=args.boot),
+        "individual": research.chase_individual(rows, n_perm=args.boot),
+        "model": research.chase_model(rows, n_boot=args.boot),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_car_order(args: argparse.Namespace) -> int:
     cards = research.load_cards(args.data_dir, args.date, args.to + timedelta(days=1))
     result = {
@@ -423,6 +435,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_line_linkage)
+
+    p = sub.add_parser(
+        "chase-break",
+        help="followers of a makuri winner finishing outside the top 3 (keirin-research, JSON)",
+    )
+    p.add_argument("--date", type=date.fromisoformat, required=True, help="first day")
+    p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument("--boot", type=int, default=2000, help="bootstrap / permutation resamples")
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_chase_break)
 
     p = sub.add_parser(
         "car-order", help="car numbers vs scores and the car-1 effect (keirin-research, JSON)"
