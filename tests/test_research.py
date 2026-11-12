@@ -397,3 +397,146 @@ def test_cli_car_order_prints_json(tmp_path, capsys):
     assert set(result) == {"period", "score_order", "convention", "car1_effect"}
     assert result["score_order"]["races"] == 1
     assert "000001" not in out and "テスト" not in out
+
+
+# --- chase break ---------------------------------------------------------------------------
+
+
+def chase_day(tmp_path, text, riders, race_class="Ａ級予選"):
+    write_day(tmp_path, DAY, {("01", 1): (race_class, riders)}, formation_rows("01", 1, text))
+    return research.load_chase_rows(tmp_path, DAY, DAY + timedelta(days=1))
+
+
+def makuri_winner(**finish):
+    riders = seven(**finish)
+    riders[0]["kimarite"] = "捲り"
+    return riders
+
+
+def test_chase_rows_are_the_riders_behind_the_winner(tmp_path):
+    rows = chase_day(tmp_path, "123/45/67", makuri_winner())
+    assert [r.winner_kimarite for r in rows] == ["捲り", "捲り"]
+    assert [r.strong for r in rows] == [False, False]  # cars 2 and 3 finish 2nd and 3rd
+    assert rows[0].stratum != rows[1].stratum  # one and two places behind
+
+
+def test_chase_row_is_strong_when_outside_the_top_3(tmp_path):
+    rows = chase_day(tmp_path, "123/45/67", makuri_winner(c2=6, c3=2, c6=3))
+    assert [r.strong for r in rows] == [True, False]
+
+
+def test_chase_skips_girls_contested_and_unplaced(tmp_path):
+    assert chase_day(tmp_path, "1/2/3/4/5/6/7", makuri_winner(), "Ｌ級ガ予") == []
+    assert chase_day(tmp_path, "(12)3/45/67", makuri_winner()) == []  # winner contests
+    riders = makuri_winner(c3=None)
+    riders[2]["finish"] = riders[2]["finish_pos"] = ""
+    rows = chase_day(tmp_path, "123/45/67", riders)
+    assert len(rows) == 1  # car 3 has no placed finish
+
+
+def test_chase_closes_the_gap_of_a_scratched_rider(tmp_path):
+    riders = makuri_winner(c2=None)
+    riders[1]["notes"] = "欠場"
+    rows = chase_day(tmp_path, "123/45/67", riders)
+    assert len(rows) == 1  # car 3 moves up to one place behind the winner
+
+
+def synthetic_chase(p_makuri, p_nige, *, races=1500, rider_effect=None, seed=0):
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(races):
+        kimarite = "捲り" if i % 2 == 0 else "逃げ"
+        rider = f"R{rng.integers(0, 150)}"
+        p = p_makuri if kimarite == "捲り" else p_nige
+        if rider_effect and kimarite == "捲り":
+            p = min(max(p + rider_effect[rider], 0.01), 0.99)
+        stratum = int(rng.integers(0, 4))
+        out.append(
+            research.ChaseRow(
+                DAY + timedelta(days=i % 100), i, rider, kimarite, stratum, bool(rng.random() < p)
+            )
+        )
+    return out
+
+
+def test_chase_effect_detects_a_makuri_difference():
+    result = research.chase_effect(synthetic_chase(0.55, 0.40), n_boot=300)
+    assert result["decision"] == "正の効果"
+    assert result["standardized_difference"] == pytest.approx(0.15, abs=0.05)
+    assert result["first_half"] > 0 and result["second_half"] > 0
+
+
+def test_chase_effect_without_a_difference_is_not_positive():
+    result = research.chase_effect(synthetic_chase(0.45, 0.45), n_boot=300)
+    assert result["decision"] != "正の効果"
+
+
+def test_chase_individual_finds_rider_differences():
+    rng = np.random.default_rng(1)
+    effects = {f"R{i}": float(rng.normal(0, 0.12)) for i in range(150)}
+    rows = synthetic_chase(0.5, 0.5, races=9000, rider_effect=effects)
+    result = research.chase_individual(rows, n_perm=300)
+    assert result["decision"] == "個人差あり"
+    assert result["split_half"]["r"] > 0
+
+
+def test_chase_individual_without_differences_is_pending():
+    result = research.chase_individual(synthetic_chase(0.5, 0.5, races=9000), n_perm=300)
+    assert result["decision"] == "保留"
+
+
+def test_cli_chase_break_prints_aggregates_only(tmp_path, capsys):
+    write_day(
+        tmp_path, DAY, {("01", 1): ("Ａ級予選", makuri_winner())},
+        formation_rows("01", 1, "123/45/67"),
+    )  # fmt: skip
+    code = cli.main(
+        ["chase-break", "--date", DAY.isoformat(), "--to", DAY.isoformat(),
+         "--boot", "20", "--data-dir", str(tmp_path)]
+    )  # fmt: skip
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "effect" in json.loads(out) and "individual" in json.loads(out)
+    assert "000001" not in out and "テスト" not in out  # no rider ids or names
+
+
+def synthetic_model(*, own=0.0, opp=0.0, gap=0.0, races=9000, seed=0):
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(races):
+        own_size = int(rng.integers(2, 5))
+        opp_max = int(rng.integers(1, 5))
+        score_gap = float(rng.normal(0, 6))
+        rank = int(rng.integers(1, 10))
+        eta = -0.3 + 0.2 * (rank - 5) + own * own_size + opp * opp_max + gap * score_gap / 5
+        strong = bool(rng.random() < 1 / (1 + math.exp(-eta)))
+        out.append(
+            research.ChaseRow(
+                DAY + timedelta(days=i % 100), i, f"R{i % 150}", "捲り", 0, strong,
+                1, rank, bool(i % 2), own_size, opp_max, score_gap,
+            )
+        )  # fmt: skip
+    return out
+
+
+def test_chase_model_separates_the_factors():
+    rows = synthetic_model(own=0.0, opp=0.35, gap=-0.3)
+    result = research.chase_model(rows, n_boot=100)
+    factors = result["factors"]
+    assert factors["opp_max"]["decision"] == "正の効果"
+    assert factors["gap"]["decision"] == "負の効果"
+    assert factors["own_size"]["decision"] == "実質的な差なし"
+    assert factors["opp_max"]["effect_per_unit"] == pytest.approx(0.07, abs=0.03)
+
+
+def test_chase_model_drops_cases_without_an_opponent_line():
+    rows = synthetic_model(races=300)
+    rows += [research.ChaseRow(DAY, 9999, "X", "捲り", 0, True, 1, 1, False, 2, 0, math.nan)]
+    assert research.chase_model(rows, n_boot=5)["cases"] == 300
+
+
+def test_loader_fills_the_line_factors(tmp_path):
+    rows = chase_day(tmp_path, "123/45/67", makuri_winner())
+    assert {r.own_size for r in rows} == {3}
+    assert {r.opp_max for r in rows} == {2}
+    assert rows[0].gap == pytest.approx(3.0)  # winner scores 89, best outside the line 86

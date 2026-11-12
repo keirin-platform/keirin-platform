@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -369,4 +369,382 @@ def car1_effect(cards: list[Card], *, n_boot: int = 2000, seed: int = 0) -> dict
         "first_half": _value(first),
         "second_half": _value(second),
         "decision": decide(ci, (first, second), CAR1_PRACTICAL),
+    }
+
+
+# --- chase break (追走の千切れ) ---------------------------------------------------------------
+
+CHASE_PRACTICAL = 0.05  # strong-break rate, makuri win minus nige win, fixed before measuring
+CHASE_MIN_CELL = 10  # cases per side in a stratum
+CHASE_MIN_RIDER = 10  # cases for a rider to enter the individual-difference test
+CHASE_MIN_HALF_RIDER = 6  # the same, within one half of the period
+CHASE_SPLIT_MIN = 5  # cases in each half for the split-half correlation
+SCORE_RANK_BINS = 7  # score rank 1, 2, 3, 4, 5, 6, 7 or worse
+_STRATA = 2 * SCORE_RANK_BINS * 2  # rel (1, 2) x score rank x nine-car field
+
+
+@dataclass(frozen=True)
+class ChaseRow:
+    """A rider behind the winner in the winner's line (not contested, placed)."""
+
+    day: date
+    race: int  # index of the race
+    rider: str  # kept in memory only; never part of an output
+    winner_kimarite: str
+    stratum: int  # (rel - 1) * 14 + rank bin * 2 + nine-car field
+    strong: bool  # finished outside the top 3
+    rel: int = 1  # places behind the winner
+    rank: int = 1  # score rank in the race
+    nine: bool = False
+    own_size: int = 2  # riders in the winner's line
+    opp_max: int = 0  # riders in the longest other line (0: no other line)
+    gap: float = math.nan  # winner's score minus the best score outside the line
+
+
+def _stratum(rel: int, score_rank: int, nine: bool) -> int:
+    return (rel - 1) * SCORE_RANK_BINS * 2 + (min(score_rank, SCORE_RANK_BINS) - 1) * 2 + int(nine)
+
+
+def load_chase_rows(data_dir: Path, start: date, end: date) -> list[ChaseRow]:
+    """Followers (1 or 2 places behind) of a winner in a line of two or more, men's only.
+
+    Only races with real lines count; scratched riders are taken out of the line, and a
+    follower must have a placed finish (a fall or a disqualification has none).
+    """
+    out: list[ChaseRow] = []
+    race_index = 0
+    for path in sorted((data_dir / "tables" / "lines").glob("*/*.csv")):
+        day = date.fromisoformat(path.stem)
+        if day < start or day >= end:
+            continue
+        formations: dict[tuple[str, str], dict[int, dict[str, Any]]] = defaultdict(dict)
+        for r in predict.read_rows(path):
+            formations[(r["venue_code"], r["race_no"])][int(r["car_no"])] = {
+                "line_no": int(r["line_no"]),
+                "line_pos": int(r["line_pos"]),
+            }
+        classes = {
+            (r["venue_code"], r["race_no"]): r["race_class"]
+            for r in predict.read_rows(table_path(data_dir, "races", day))
+        }
+        entries: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+        for r in predict.read_rows(table_path(data_dir, "entries", day)):
+            entries[(r["venue_code"], r["race_no"])].append(r)
+        for key in sorted(formations, key=lambda k: (k[0], int(k[1]))):
+            if predict.group_of(classes.get(key)) not in ("A", "S"):
+                continue
+            rows = entries[key]
+            riders = [r for r in rows if not predict.is_scratched(r)]
+            if any(r["score"] == "" for r in riders):
+                continue
+            scratched = {int(r["car_no"]) for r in rows if predict.is_scratched(r)}
+            by_car = predict.close_gaps(formations[key], scratched)
+            scores = [float(r["score"]) for r in riders]
+            scores_of = {int(r["car_no"]): float(r["score"]) for r in riders}
+            before = len(out)
+            winners = [r for r in riders if r["finish_pos"] == "1"]
+            if len(winners) != 1 or int(winners[0]["car_no"]) not in by_car:
+                continue
+            win = winners[0]
+            w = by_car[int(win["car_no"])]
+            if w["contested"] or w["line_size"] < 2:
+                continue
+            others = {
+                i["line_no"]: i["line_size"]
+                for c, i in by_car.items()
+                if i["line_no"] != w["line_no"]
+            }
+            outside = [scores_of[c] for c, i in by_car.items() if i["line_no"] != w["line_no"]]
+            gap = float(win["score"]) - max(outside) if outside else math.nan
+            for r in riders:
+                info = by_car.get(int(r["car_no"]))
+                if not info or info["line_no"] != w["line_no"] or info["contested"]:
+                    continue
+                rel = info["line_pos"] - w["line_pos"]
+                if rel not in (1, 2) or not r["finish_pos"]:
+                    continue
+                rank = 1 + sum(s > float(r["score"]) for s in scores)
+                out.append(
+                    ChaseRow(
+                        day,
+                        race_index,
+                        r["racer_id"],
+                        win["kimarite"],
+                        _stratum(rel, rank, len(riders) >= 9),
+                        int(r["finish_pos"]) > 3,
+                        rel,
+                        rank,
+                        len(riders) >= 9,
+                        w["line_size"],
+                        max(others.values(), default=0),
+                        gap,
+                    )
+                )
+            if len(out) > before:
+                race_index += 1
+    return out
+
+
+def _stratified_arrays(rows: list[ChaseRow], races: int) -> np.ndarray:
+    """(races, 4, strata): makuri n, makuri strong, nige n, nige strong per race."""
+    a = np.zeros((races, 4, _STRATA))
+    for r in rows:
+        if r.winner_kimarite == "捲り":
+            a[r.race, 0, r.stratum] += 1
+            a[r.race, 1, r.stratum] += r.strong
+        elif r.winner_kimarite == "逃げ":
+            a[r.race, 2, r.stratum] += 1
+            a[r.race, 3, r.stratum] += r.strong
+    return a
+
+
+def _standardized_diff(total: np.ndarray, min_cell: int = CHASE_MIN_CELL) -> float:
+    """Makuri minus nige strong-break rate, weighted by makuri cases of the usable strata."""
+    an, ak, bn, bk = total
+    ok = (an >= min_cell) & (bn >= min_cell)
+    if not ok.any():
+        return math.nan
+    diff = ak[ok] / an[ok] - bk[ok] / bn[ok]
+    return float((an[ok] * diff).sum() / an[ok].sum())
+
+
+def chase_effect(rows: list[ChaseRow], *, n_boot: int = 2000, seed: int = 0) -> dict[str, Any]:
+    races = sorted({r.race for r in rows})
+    index = {race: i for i, race in enumerate(races)}
+    rows = [replace(r, race=index[r.race]) for r in rows]
+    arrays = _stratified_arrays(rows, len(races))
+    point = _standardized_diff(arrays.sum(axis=0))
+    rng = np.random.default_rng(seed)
+    flat = arrays.reshape(len(races), -1)
+    boots = []
+    for _ in range(n_boot):
+        counts = rng.multinomial(len(races), np.full(len(races), 1 / len(races)))
+        boots.append(_standardized_diff((counts @ flat).reshape(4, _STRATA)))
+    ci = tuple(np.nanpercentile(boots, [2.5, 97.5]))
+    median = statistics.median_low(sorted({r.day for r in rows}))
+    halves = []
+    for keep in (lambda d: d <= median, lambda d: d > median):
+        half = [r for r in rows if keep(r.day)]
+        halves.append(_standardized_diff(_stratified_arrays(half, len(races)).sum(axis=0), 5))
+    kinds = ("捲り", "逃げ")
+    rate = {
+        k: {
+            "n": sum(r.winner_kimarite == k for r in rows),
+            "strong_break_rate": _value(
+                _mean(np.array([r.strong for r in rows if r.winner_kimarite == k], float))
+            ),
+        }
+        for k in kinds
+    }
+    return {
+        "followers": rate,
+        "races": len(races),
+        "standardized_difference": _value(point),
+        "ci95": [_value(v) for v in ci],
+        "first_half": _value(halves[0]),
+        "second_half": _value(halves[1]),
+        "practical": CHASE_PRACTICAL,
+        "decision": decide(ci, (halves[0], halves[1]), CHASE_PRACTICAL),
+    }
+
+
+def _rider_statistic(riders: np.ndarray, residual: np.ndarray, size: int) -> float:
+    sums = np.bincount(riders, weights=residual, minlength=size)
+    counts = np.bincount(riders, minlength=size)
+    keep = counts > 0
+    return float((sums[keep] ** 2 / counts[keep]).sum())
+
+
+def _permutation_test(
+    riders: np.ndarray, residual: np.ndarray, size: int, *, n_perm: int, seed: int
+) -> dict[str, Any]:
+    rng = np.random.default_rng(seed)
+    observed = _rider_statistic(riders, residual, size)
+    null = np.array(
+        [_rider_statistic(riders, rng.permutation(residual), size) for _ in range(n_perm)]
+    )
+    p = (int((null >= observed).sum()) + 1) / (n_perm + 1)
+    return {
+        "statistic": _value(observed),
+        "null_mean": _value(null.mean()),
+        "p": _value(p),
+        "between_rider_sd": _value(
+            math.sqrt(max(observed - null.mean(), 0.0) / max(len(residual), 1))
+        ),
+    }
+
+
+def chase_individual(rows: list[ChaseRow], *, n_perm: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """Are riders different in breaking when they follow a makuri winner?
+
+    The residual of each case is its outcome minus the stratum rate (rank, place behind
+    the winner, nine-car field). See `_individual_report`.
+    """
+    makuri = [r for r in rows if r.winner_kimarite == "捲り"]
+    strata = np.array([r.stratum for r in makuri])
+    strong = np.array([r.strong for r in makuri], float)
+    rate = np.zeros(_STRATA)
+    for s in range(_STRATA):
+        if (strata == s).any():
+            rate[s] = strong[strata == s].mean()
+    return _individual_report(makuri, strong - rate[strata], n_perm=n_perm, seed=seed)
+
+
+def _individual_report(
+    makuri: list[ChaseRow], residual: np.ndarray, *, n_perm: int, seed: int
+) -> dict[str, Any]:
+    """The statistic is the sum over riders of cases * mean^2 of the residual; the null
+    permutes the residuals across riders. Only counts and p-values leave."""
+    ids = {rider: i for i, rider in enumerate(sorted({r.rider for r in makuri}))}
+    riders = np.array([ids[r.rider] for r in makuri])
+    days = np.array([r.day for r in makuri])
+    median = statistics.median_low(sorted(set(days.tolist())))
+    cases = np.bincount(riders, minlength=len(ids))
+
+    def test(mask: np.ndarray, minimum: int) -> dict[str, Any]:
+        sub_cases = np.bincount(riders[mask], minlength=len(ids))
+        keep = mask & (sub_cases[riders] >= minimum)
+        out = _permutation_test(riders[keep], residual[keep], len(ids), n_perm=n_perm, seed=seed)
+        out["riders"] = int((sub_cases >= minimum).sum())
+        out["cases"] = int(keep.sum())
+        return out
+
+    whole = test(np.ones(len(makuri), bool), CHASE_MIN_RIDER)
+    first = test(days <= median, CHASE_MIN_HALF_RIDER)
+    second = test(days > median, CHASE_MIN_HALF_RIDER)
+    # split-half: the same riders' mean residual in the two halves
+    sums = {}
+    for name, mask in (("a", days <= median), ("b", days > median)):
+        sums[name] = (
+            np.bincount(riders[mask], weights=residual[mask], minlength=len(ids)),
+            np.bincount(riders[mask], minlength=len(ids)),
+        )
+    both = (sums["a"][1] >= CHASE_SPLIT_MIN) & (sums["b"][1] >= CHASE_SPLIT_MIN)
+    mean_a = sums["a"][0][both] / sums["a"][1][both]
+    mean_b = sums["b"][0][both] / sums["b"][1][both]
+    split: dict[str, Any] = {"riders": int(both.sum())}
+    if both.sum() >= 3:
+        r_obs = float(np.corrcoef(mean_a, mean_b)[0, 1])
+        rng = np.random.default_rng(seed)
+        null = np.array([np.corrcoef(mean_a, rng.permutation(mean_b))[0, 1] for _ in range(n_perm)])
+        split |= {"r": _value(r_obs), "p": _value((int((null >= r_obs).sum()) + 1) / (n_perm + 1))}
+    return {
+        "riders": len(ids),
+        "cases": len(makuri),
+        "cases_per_rider": {
+            "median": float(np.median(cases[cases > 0])),
+            "p90": float(np.percentile(cases[cases > 0], 90)),
+            "max": int(cases.max()),
+        },
+        "whole_period": whole,
+        "first_half": first,
+        "second_half": second,
+        "split_half": split,
+        "decision": "個人差あり" if all(t["p"] < 0.05 for t in (whole, first, second)) else "保留",
+    }
+
+
+# --- chase break: all factors together -------------------------------------------------------
+
+CHASE_MODEL_PRACTICAL = 0.03  # change in the strong-break rate per unit of a factor
+GAP_UNIT = 5.0  # score points
+GAP_CLIP = 20.0
+FACTORS = ("own_size", "opp_max", "gap")  # +1 rider, +1 rider, +5 score points
+
+
+def _design(rows: list[ChaseRow]) -> np.ndarray:
+    """Intercept, 2 places behind, nine-car field, score-rank dummies (2..7+), then the
+    three factors: own line size (cap 4), longest other line (cap 4), score gap / 5."""
+    ranks = np.array([min(r.rank, SCORE_RANK_BINS) for r in rows])
+    cols = [
+        np.ones(len(rows)),
+        np.array([r.rel == 2 for r in rows], float),
+        np.array([r.nine for r in rows], float),
+        *[(ranks == k).astype(float) for k in range(2, SCORE_RANK_BINS + 1)],
+        np.array([min(r.own_size, 4) for r in rows], float),
+        np.array([min(r.opp_max, 4) for r in rows], float),
+        np.clip(np.array([r.gap for r in rows]), -GAP_CLIP, GAP_CLIP) / GAP_UNIT,
+    ]
+    return np.column_stack(cols)
+
+
+def _logit(x: np.ndarray, y: np.ndarray, *, ridge: float = 1e-6) -> np.ndarray:
+    """Logistic regression by Newton steps (a tiny ridge keeps sparse strata finite)."""
+    beta = np.zeros(x.shape[1])
+    for _ in range(25):
+        eta = np.clip(x @ beta, -30, 30)
+        p = 1 / (1 + np.exp(-eta))
+        w = p * (1 - p) + 1e-9
+        grad = x.T @ (y - p) - ridge * beta
+        hess = (x * w[:, None]).T @ x + ridge * np.eye(x.shape[1])
+        step = np.linalg.solve(hess, grad)
+        beta += step
+        if np.abs(step).max() < 1e-8:
+            break
+    return beta
+
+
+def _sigmoid(eta: np.ndarray) -> np.ndarray:
+    return 1 / (1 + np.exp(-np.clip(eta, -30, 30)))
+
+
+def _marginal_effects(x: np.ndarray, beta: np.ndarray) -> np.ndarray:
+    """Average change in the strong-break rate for one unit of each factor (own line size
+    +1 rider, longest other line +1 rider, score gap +5 points)."""
+    base = _sigmoid(x @ beta)
+    out = []
+    for k in (-3, -2, -1):  # the last three columns
+        up = x.copy()
+        up[:, k] += 1.0
+        out.append(float((_sigmoid(up @ beta) - base).mean()))
+    return np.array(out)
+
+
+def chase_model(rows: list[ChaseRow], *, n_boot: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """Own line size, longest other line and score gap together, for followers of a makuri
+    winner. Reports each factor's average marginal effect with a race-clustered bootstrap
+    interval and the same fit in each half of the period; the individual-difference test
+    is repeated on what the factors leave over."""
+    cases = [
+        r for r in rows if r.winner_kimarite == "捲り" and r.opp_max >= 1 and not math.isnan(r.gap)
+    ]
+    if len(cases) < 3 * len(FACTORS) + 20:  # too few to fit
+        return {"cases": len(cases), "practical": CHASE_MODEL_PRACTICAL, "factors": {}}
+    x = _design(cases)
+    y = np.array([r.strong for r in cases], float)
+    beta = _logit(x, y)
+    point = _marginal_effects(x, beta)
+    race = np.array([r.race for r in cases])
+    order = np.argsort(race, kind="stable")
+    bounds = np.flatnonzero(np.diff(race[order])) + 1
+    groups = np.split(order, bounds)
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(n_boot):
+        pick = rng.integers(0, len(groups), len(groups))
+        idx = np.concatenate([groups[i] for i in pick])
+        boots.append(_marginal_effects(x[idx], _logit(x[idx], y[idx])))
+    boots = np.array(boots)
+    days = np.array([r.day for r in cases])
+    median = statistics.median_low(sorted(set(days.tolist())))
+    halves = []
+    for mask in (days <= median, days > median):
+        halves.append(_marginal_effects(x[mask], _logit(x[mask], y[mask])))
+    factors = {}
+    for k, name in enumerate(FACTORS):
+        ci = tuple(np.percentile(boots[:, k], [2.5, 97.5]))
+        factors[name] = {
+            "effect_per_unit": _value(point[k]),
+            "ci95": [_value(v) for v in ci],
+            "first_half": _value(halves[0][k]),
+            "second_half": _value(halves[1][k]),
+            "decision": decide(ci, (halves[0][k], halves[1][k]), CHASE_MODEL_PRACTICAL),
+        }
+    residual = y - _sigmoid(x @ beta)
+    return {
+        "cases": len(cases),
+        "practical": CHASE_MODEL_PRACTICAL,
+        "units": {"own_size": "+1 rider", "opp_max": "+1 rider", "gap": f"+{GAP_UNIT:g} points"},
+        "factors": factors,
+        "individual_after_factors": _individual_report(cases, residual, n_perm=n_boot, seed=seed),
     }
