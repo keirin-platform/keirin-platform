@@ -20,6 +20,7 @@ import numpy as np
 from scipy.special import logsumexp
 
 from keirin import predict
+from keirin.lines import REGIONS
 from keirin.storage import table_path
 
 LINKAGE_PRACTICAL = 0.05  # same-line pairs both in the top 3, per race
@@ -747,4 +748,709 @@ def chase_model(rows: list[ChaseRow], *, n_boot: int = 2000, seed: int = 0) -> d
         "units": {"own_size": "+1 rider", "opp_max": "+1 rider", "gap": f"+{GAP_UNIT:g} points"},
         "factors": factors,
         "individual_after_factors": _individual_report(cases, residual, n_perm=n_boot, seed=seed),
+    }
+
+
+# --- line positions (位置・人数・競り・地区) ---------------------------------------------------
+# docs/line-positions.md: the measures and the practical sizes were fixed before measuring.
+
+POSITION_WIN_PRACTICAL = 0.02  # win rate minus the score-only model
+POSITION_TOP3_PRACTICAL = 0.03  # top-3 rate minus the score-only model
+BACK_LINE_PRACTICAL = 0.03  # win rate, second minus head of a line whose head took the back
+PAIR_PRACTICAL = 0.02  # head and second both in the top 3 minus the model, per pair
+PAYOUT_PRACTICAL = 0.10  # log exacta payout, contested minus other races
+BACK_LINE_CLAIM = (0.75, 0.85)  # "80% of the winners come from the line that took the back"
+PAYOUT_MIN_CELL = 10  # races per side in a stratum
+WITHIN_RIDER_MIN = 5  # rides in each of the two kinds of position
+
+OUTCOMES = ("win", "top2", "top3")
+_PLACE_NAMES = {1: "head", 2: "second", 3: "third", 4: "fourth"}
+POSITIONS = {  # cells of `_cells`; the suffix is the line size (4: four or more)
+    "head": ("head_2", "head_3", "head_4"),
+    "second": ("second_2", "second_3", "second_4"),
+    "third": ("third_3", "third_4"),
+    "fourth_plus": ("fourth_4",),
+    "solo": ("solo",),
+    "contested": ("contested",),
+    "contested_head": ("contested_head",),
+}
+_LONG_FRONT = ("head_3", "head_4", "second_3", "second_4")
+_SHORT_FRONT = ("head_2", "second_2")
+_ROLES = ("head", "second", "third", "solo")
+_PAYOUT_STRATA = tuple(f"{g}{f}" for g in "AS" for f in ("7", "9", "x"))
+_NEARNESS = ("prefecture", "region", "other")
+_AFTER_HOME = ("same", "second", "behind", "other")
+
+
+def top3_order_probabilities(theta: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """(n, n, n): probability that riders a, b and c finish 1st, 2nd and 3rd.
+
+    The model of `predict.race_probabilities` as one array (three or more riders).
+    """
+    u1, u23, (t2, t3) = predict.utilities(theta, x)
+    n = len(x)
+    off = ~np.eye(n, dtype=bool)
+    p1 = np.exp(u1 - logsumexp(u1))
+    e2 = np.exp(t2 * u23 - (t2 * u23).max())
+    e3 = np.exp(t3 * u23 - (t3 * u23).max())
+    p2 = np.where(off, e2[None, :], 0.0)
+    p2 /= p2.sum(axis=1, keepdims=True)  # (a, b): b is second once a has won
+    free = off[:, :, None] & off[:, None, :] & off[None, :, :]  # a, b and c all differ
+    p3 = np.where(free, e3[None, None, :], 0.0)
+    left = p3.sum(axis=2, keepdims=True)
+    p3 = np.divide(p3, left, out=np.zeros_like(p3), where=left > 0)
+    return p1[:, None, None] * p2[:, :, None] * p3
+
+
+def expected_places(theta: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(n, 3) win / top 2 / top 3 and (n, n) both in the top 3, under the model."""
+    t = top3_order_probabilities(theta, x)
+    first, second, third = t.sum(axis=(1, 2)), t.sum(axis=(0, 2)), t.sum(axis=(0, 1))
+    m = t.sum(axis=2) + t.sum(axis=1) + t.sum(axis=0)
+    return np.column_stack([first, first + second, first + second + third]), m + m.T
+
+
+@dataclass(frozen=True)
+class LineRace:
+    """A men's race with a real formation; one entry per rider who started."""
+
+    day: date
+    group: str  # A / S
+    final: bool  # 決勝
+    source: str  # where the formation comes from
+    pos: tuple[int, ...]  # place in the line (1: head; a rider alone is 1)
+    size: tuple[int, ...]  # riders in the line
+    fight: tuple[bool, ...]  # contests the place with another rider (競り)
+    line: tuple[int, ...]  # line number (a rider alone has their own)
+    scores: tuple[float, ...]
+    riders: tuple[str, ...]  # kept in memory only; never part of an output
+    prefectures: tuple[str, ...]
+    prob: np.ndarray  # (n, 3): win / top 2 / top 3 under the score-only model
+    pair_prob: np.ndarray  # (n, n): both in the top 3
+    order: tuple[int, int, int]  # entries of the 1st, 2nd and 3rd
+    back: int | None = None  # entry of the rider with B (None unless exactly one)
+    home: int | None = None
+    exacta: tuple[float, ...] = ()  # 2車単 payouts per 100 yen (several on a dead heat)
+    trifecta: tuple[float, ...] = ()
+
+
+def load_line_races(data_dir: Path, start: date, end: date, model: predict.Model) -> list[LineRace]:
+    """Men's races of start <= day < end with real lines, a score for every rider who
+    started and three placed riders. `model` is the score-only model of each group."""
+    out = []
+    for path in sorted((data_dir / "tables" / "lines").glob("*/*.csv")):
+        day = date.fromisoformat(path.stem)
+        if day < start or day >= end:
+            continue
+        formations: dict[tuple[str, str], dict[int, dict[str, Any]]] = defaultdict(dict)
+        sources = {}
+        for r in predict.read_rows(path):
+            key = (r["venue_code"], r["race_no"])
+            formations[key][int(r["car_no"])] = {
+                "line_no": int(r["line_no"]),
+                "line_pos": int(r["line_pos"]),
+            }
+            sources[key] = r["source"]
+        classes = {
+            (r["venue_code"], r["race_no"]): r["race_class"]
+            for r in predict.read_rows(table_path(data_dir, "races", day))
+        }
+        entries: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+        for r in predict.read_rows(table_path(data_dir, "entries", day)):
+            entries[(r["venue_code"], r["race_no"])].append(r)
+        payouts: dict[tuple[str, str], dict[str, list[float]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for r in predict.read_rows(table_path(data_dir, "payouts", day)):
+            if r["bet_type"] in ("2車単", "3連単") and float(r["payout"] or 0) > 0:
+                payouts[(r["venue_code"], r["race_no"])][r["bet_type"]].append(float(r["payout"]))
+        for key in sorted(formations, key=lambda k: (k[0], int(k[1]))):
+            race_class = classes.get(key) or ""
+            group = predict.group_of(race_class)
+            if group not in ("A", "S") or group not in model.params:
+                continue
+            race = _line_race(
+                day, group, race_class, sources[key], entries[key], formations[key],
+                model.params[group], payouts.get(key, {}),
+            )  # fmt: skip
+            if race is not None:
+                out.append(race)
+    return out
+
+
+def _line_race(
+    day: date,
+    group: str,
+    race_class: str,
+    source: str,
+    rows: list[dict[str, str]],
+    formation: dict[int, dict[str, Any]],
+    theta: np.ndarray,
+    payouts: dict[str, list[float]],
+) -> LineRace | None:
+    riders = [r for r in rows if not predict.is_scratched(r)]
+    if len(riders) < 3 or any(r["score"] == "" for r in riders):
+        return None
+    placed = sorted(
+        (int(r["finish_pos"]), int(r["car_no"]), i) for i, r in enumerate(riders) if r["finish_pos"]
+    )
+    if len(placed) < 3:
+        return None
+    scratched = {int(r["car_no"]) for r in rows if predict.is_scratched(r)}
+    by_car = predict.close_gaps(formation, scratched)
+    line_no = max((info["line_no"] for info in by_car.values()), default=0)
+    infos = []
+    for r in riders:
+        info = by_car.get(int(r["car_no"]))
+        if info is None:  # not in the formation: rides alone
+            line_no += 1
+            info = {"line_no": line_no, "line_pos": 1, "line_size": 1, "contested": False}
+        infos.append(info)
+
+    def only(flag: str) -> int | None:
+        marked = [i for i, r in enumerate(riders) if flag in (r.get("bh") or "")]
+        return marked[0] if len(marked) == 1 else None
+
+    prob, pair_prob = expected_places(theta, predict.feature_matrix(riders, {}))
+    return LineRace(
+        day,
+        group,
+        "決勝" in race_class and "準決" not in race_class,
+        source,
+        tuple(i["line_pos"] for i in infos),
+        tuple(i["line_size"] for i in infos),
+        tuple(bool(i["contested"]) for i in infos),
+        tuple(i["line_no"] for i in infos),
+        tuple(float(r["score"]) for r in riders),
+        tuple(r["racer_id"] for r in riders),
+        tuple(r["prefecture"] for r in riders),
+        prob,
+        pair_prob,
+        tuple(i for *_, i in placed[:3]),
+        only("B"),
+        only("H"),
+        tuple(payouts.get("2車単", ())),
+        tuple(payouts.get("3連単", ())),
+    )
+
+
+def _cells(race: LineRace) -> list[str]:
+    """Where each rider is: head_2 .. fourth_4 in a line nobody contests (the suffix is the
+    line size, 4 for four or more), solo, and in a line with a contested place contested
+    (the riders fighting for it), contested_head or contested_other."""
+    fought = {line for line, fight in zip(race.line, race.fight, strict=True) if fight}
+    out = []
+    for pos, size, fight, line in zip(race.pos, race.size, race.fight, race.line, strict=True):
+        if size == 1:
+            out.append("solo")
+        elif fight:
+            out.append("contested")
+        elif line in fought:
+            out.append("contested_head" if pos == 1 else "contested_other")
+        else:
+            out.append(f"{_PLACE_NAMES[min(pos, 4)]}_{min(size, 4)}")
+    return out
+
+
+def _placed(race: LineRace) -> np.ndarray:
+    """(n, 3) bool: won, in the top 2, in the top 3."""
+    placed = np.zeros((len(race.pos), 3), bool)
+    placed[race.order[0], 0] = True
+    placed[list(race.order[:2]), 1] = True
+    placed[list(race.order), 2] = True
+    return placed
+
+
+def _nearness(a: str, b: str) -> str | None:
+    """Same prefecture, same region (lines.REGIONS) or another region; None when unknown."""
+    if a not in REGIONS or b not in REGIONS:
+        return None
+    if a == b:
+        return "prefecture"
+    return "region" if REGIONS[a] == REGIONS[b] else "other"
+
+
+def _race_columns(race: LineRace) -> dict[str, float]:
+    """Everything the summary needs from one race, as sums it can add up over races."""
+    c: dict[str, float] = defaultdict(float)
+    n = len(race.pos)
+    placed, cells = _placed(race), _cells(race)
+    winner = race.order[0]
+    c["races"] = 1
+    for i, cell in enumerate(cells):
+        c[f"n:{cell}"] += 1
+        for k, outcome in enumerate(OUTCOMES):
+            c[f"{outcome}:{cell}"] += placed[i, k]
+            c[f"e{outcome}:{cell}"] += race.prob[i, k]
+        rank = min(1 + sum(s > race.scores[i] for s in race.scores), SCORE_RANK_BINS)
+        role = cell.split("_")[0] if cell != "solo" else "solo"
+        for who in ("all", role) if role in _ROLES and "contested" not in cell else ("all",):
+            c[f"rk:{who}:{rank}:n"] += 1
+            c[f"rk:{who}:{rank}:win"] += placed[i, 0] - race.prob[i, 0]
+            c[f"rk:{who}:{rank}:top3"] += placed[i, 2] - race.prob[i, 2]
+
+    def second_of(head: int) -> int:
+        return next(i for i in range(n) if race.line[i] == race.line[head] and race.pos[i] == 2)
+
+    def mates(i: int) -> list[int]:
+        return [k for k in range(n) if race.line[k] == race.line[i]]
+
+    # the head and the second of each line nobody contests, by how near their homes are
+    for i, cell in enumerate(cells):
+        if cell.startswith("head_"):
+            j = second_of(i)
+            near = _nearness(race.prefectures[i], race.prefectures[j])
+            if near:
+                c[f"pr:{near}:n"] += 1
+                c[f"pr:{near}:obs"] += placed[i, 2] and placed[j, 2]
+                c[f"pr:{near}:exp"] += race.pair_prob[i, j]
+
+    if race.back is not None:
+        b = race.back
+        c["b:n"] += 1
+        c["b:line_win"] += winner in mates(b)
+        c["b:self_win"] += winner == b
+        if race.size[b] >= 2:
+            c["b:multi_n"] += 1
+            c["b:multi_line_win"] += winner in mates(b)
+        if cells[b].startswith("head_"):  # the head of an uncontested line led at the back
+            j = second_of(b)
+            c["bl:n"] += 1
+            for name, i in (("head", b), ("second", j)):
+                c[f"bl:{name}_win"] += placed[i, 0]
+                c[f"bl:{name}_ewin"] += race.prob[i, 0]
+                c[f"bl:{name}_top3"] += placed[i, 2]
+    if race.home is not None:
+        h = race.home
+        c["h:n"] += 1
+        c["h:line_win"] += winner in mates(h)
+        if cells[h].startswith("head_") and race.back is not None:
+            b = race.back
+            if b == h:
+                who = "same"
+            elif race.line[b] == race.line[h]:
+                who = "second" if race.pos[b] == 2 else "behind"
+            else:
+                who = "other"
+            c[f"ah:{who}:n"] += 1
+            for name, i in (("head", h), ("second", second_of(h))):
+                c[f"ah:{who}:{name}_win"] += placed[i, 0]
+                c[f"ah:{who}:{name}_top3"] += placed[i, 2]
+
+    first, second, third = race.order
+    same12 = race.line[first] == race.line[second]
+    c["ot:same12"] += same12
+    c["ot:same123"] += same12 and race.line[third] == race.line[first]
+
+    kind = "c" if any(race.fight) else "p"  # contested or plain
+    stratum = f"{race.group}{n if n in (7, 9) else 'x'}"
+    for name, paid in (("x2", race.exacta), ("x3", race.trifecta)):
+        if paid:
+            c[f"{name}:{stratum}:{kind}n"] += 1
+            c[f"{name}:{stratum}:{kind}log"] += float(np.mean(np.log(paid)))
+    best = max(race.scores)
+    tops = [i for i, s in enumerate(race.scores) if s == best]
+    if len(tops) == 1:
+        c[f"fav:{kind}:n"] += 1
+        c[f"fav:{kind}:win"] += placed[tops[0], 0]
+        c[f"fav:{kind}:ewin"] += race.prob[tops[0], 0]
+    return c
+
+
+def _ratio(a: Any, b: Any) -> Any:
+    """a / b, NaN where b is 0."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    return np.where(b > 0, a / np.where(b > 0, b, 1.0), math.nan)
+
+
+class _Totals:
+    """Column sums over the races: the whole period, each half (split at the median race
+    day) and bootstrap replicates that resample races."""
+
+    def __init__(self, races: list[LineRace], *, n_boot: int, seed: int) -> None:
+        rows = [_race_columns(r) for r in races]
+        self.index = {name: i for i, name in enumerate(sorted({k for row in rows for k in row}))}
+        table = np.zeros((len(rows), len(self.index)))
+        for i, row in enumerate(rows):
+            for name, value in row.items():
+                table[i, self.index[name]] = value
+        days = np.array([r.day.toordinal() for r in races], dtype=int)
+        median = statistics.median_low(days.tolist()) if len(days) else 0
+        self.point = table.sum(axis=0)
+        self.halves = (table[days <= median].sum(axis=0), table[days > median].sum(axis=0))
+        rng = np.random.default_rng(seed)
+        n = len(rows)
+        boots = [np.zeros((0, len(self.index)))]
+        for first in range(0, n_boot if n else 0, 100):
+            draws = rng.multinomial(n, np.full(n, 1 / n), size=min(100, n_boot - first))
+            boots.append(draws @ table)
+        self.boots = np.vstack(boots)
+
+    def _view(self, sums: np.ndarray):
+        def total(*names: str) -> np.ndarray:
+            out = np.zeros(sums.shape[:-1])
+            for name in names:
+                if name in self.index:
+                    out = out + sums[..., self.index[name]]
+            return out
+
+        return total
+
+    def value(self, stat) -> float | None:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return _value(float(stat(self._view(self.point))))
+
+    def estimate(self, stat, practical: float | None = None) -> dict[str, Any]:
+        """`stat` maps a function giving column totals to the statistic."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            point = float(stat(self._view(self.point)))
+            boots = np.asarray(stat(self._view(self.boots)), float)
+            halves = tuple(float(stat(self._view(h))) for h in self.halves)
+        ci = (math.nan, math.nan)
+        if np.isfinite(boots).any():
+            ci = tuple(float(v) for v in np.nanpercentile(boots, [2.5, 97.5]))
+        out = {
+            "value": _value(point),
+            "ci95": [_value(v) for v in ci],
+            "first_half": _value(halves[0]),
+            "second_half": _value(halves[1]),
+        }
+        if practical is not None:
+            out |= {"practical": practical, "decision": decide(ci, halves, practical)}
+        return out
+
+
+def _rate_excess(cells: tuple[str, ...], outcome: str):
+    """Observed minus expected rate of the riders in these cells."""
+
+    def stat(t) -> Any:
+        observed = t(*[f"{outcome}:{c}" for c in cells])
+        expected = t(*[f"e{outcome}:{c}" for c in cells])
+        return _ratio(observed - expected, t(*[f"n:{c}" for c in cells]))
+
+    return stat
+
+
+def _minus(a, b):
+    return lambda t: a(t) - b(t)
+
+
+def _pair_excess(near: str):
+    return lambda t: _ratio(t(f"pr:{near}:obs") - t(f"pr:{near}:exp"), t(f"pr:{near}:n"))
+
+
+def _payout_gap(name: str):
+    """Mean log payout, contested minus plain races, within group x field size strata and
+    weighted by the contested races of the strata with enough races on both sides."""
+
+    def stat(t) -> Any:
+        cn, cl, pn, pl = (
+            np.stack([t(f"{name}:{s}:{col}") for s in _PAYOUT_STRATA], axis=-1)
+            for col in ("cn", "clog", "pn", "plog")
+        )
+        ok = (cn >= PAYOUT_MIN_CELL) & (pn >= PAYOUT_MIN_CELL)
+        diff = np.where(ok, cl / np.where(ok, cn, 1.0) - pl / np.where(ok, pn, 1.0), 0.0)
+        weight = np.where(ok, cn, 0.0)
+        return _ratio((weight * diff).sum(axis=-1), weight.sum(axis=-1))
+
+    return stat
+
+
+def _rank_standardized(role: str, outcome: str):
+    """Excess of a role over all riders of the same score rank, weighted by the role."""
+
+    def stat(t) -> Any:
+        total, count = 0.0, 0.0
+        for rank in range(1, SCORE_RANK_BINS + 1):
+            n = t(f"rk:{role}:{rank}:n")
+            everyone = _ratio(t(f"rk:all:{rank}:{outcome}"), t(f"rk:all:{rank}:n"))
+            total = total + t(f"rk:{role}:{rank}:{outcome}") - np.where(n > 0, n * everyone, 0.0)
+            count = count + n
+        return _ratio(total, count)
+
+    return stat
+
+
+def _back_line_share(t) -> Any:
+    return _ratio(t("b:line_win"), t("b:n"))
+
+
+PRIMARY = {  # name: (statistic, practical size); docs/line-positions.md
+    "second_minus_head_win": (
+        _minus(_rate_excess(POSITIONS["second"], "win"), _rate_excess(POSITIONS["head"], "win")),
+        POSITION_WIN_PRACTICAL,
+    ),
+    "back_line_second_minus_head_win": (
+        lambda t: _ratio(t("bl:second_win") - t("bl:head_win"), t("bl:n")),
+        BACK_LINE_PRACTICAL,
+    ),
+    "third_win": (_rate_excess(POSITIONS["third"], "win"), POSITION_WIN_PRACTICAL),
+    "third_top3": (_rate_excess(POSITIONS["third"], "top3"), POSITION_TOP3_PRACTICAL),
+    "solo_top3": (_rate_excess(POSITIONS["solo"], "top3"), POSITION_TOP3_PRACTICAL),
+    "solo_win": (_rate_excess(POSITIONS["solo"], "win"), POSITION_WIN_PRACTICAL),
+    "contested_log_exacta": (_payout_gap("x2"), PAYOUT_PRACTICAL),
+    "long_line_front_win": (
+        _minus(_rate_excess(_LONG_FRONT, "win"), _rate_excess(_SHORT_FRONT, "win")),
+        POSITION_WIN_PRACTICAL,
+    ),
+    "long_line_front_top3": (
+        _minus(_rate_excess(_LONG_FRONT, "top3"), _rate_excess(_SHORT_FRONT, "top3")),
+        POSITION_TOP3_PRACTICAL,
+    ),
+    "same_prefecture_pair": (
+        _minus(_pair_excess("prefecture"), _pair_excess("other")),
+        PAIR_PRACTICAL,
+    ),
+}
+
+
+def decide_share(ci: tuple[float, float], halves: tuple[float, float]) -> str:
+    """主張どおり / 主張と違う / 保留 for a claimed share (BACK_LINE_CLAIM)."""
+    low, high = BACK_LINE_CLAIM
+    lo, hi = ci
+    if low <= lo and hi <= high:
+        return "主張どおり"
+    if (hi < low and all(h < low for h in halves)) or (lo > high and all(h > high for h in halves)):
+        return "主張と違う"
+    return "保留"
+
+
+def _decisions(totals: _Totals) -> dict[str, Any]:
+    out = {name: totals.estimate(stat, practical) for name, (stat, practical) in PRIMARY.items()}
+    share = totals.estimate(_back_line_share)
+    ci = tuple(math.nan if v is None else v for v in share["ci95"])
+    halves = tuple(
+        math.nan if v is None else v for v in (share["first_half"], share["second_half"])
+    )
+    out["back_line_winner_share"] = share | {
+        "claim": list(BACK_LINE_CLAIM),
+        "decision": decide_share(ci, halves),
+    }
+    return out
+
+
+def _cell_report(totals: _Totals, cells: tuple[str, ...]) -> dict[str, Any]:
+    riders = [f"n:{c}" for c in cells]
+    out: dict[str, Any] = {"riders": int(totals.value(lambda t: t(*riders)) or 0)}
+    for outcome in OUTCOMES:
+        observed = [f"{outcome}:{c}" for c in cells]
+        expected = [f"e{outcome}:{c}" for c in cells]
+        out[outcome] = {
+            "rate": totals.value(lambda t, o=observed: _ratio(t(*o), t(*riders))),
+            "expected": totals.value(lambda t, e=expected: _ratio(t(*e), t(*riders))),
+            "excess": totals.estimate(_rate_excess(cells, outcome)),
+        }
+    return out
+
+
+def within_rider(
+    races: list[LineRace],
+    first: tuple[str, ...],
+    second: tuple[str, ...],
+    *,
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """The same rider in two kinds of position: the excess (observed minus the score-only
+    model) in the cells `first` minus that in `second`, averaged over the riders with
+    enough rides in both. The interval resamples riders. Only aggregates leave."""
+    sums: dict[str, np.ndarray] = defaultdict(lambda: np.zeros((2, 3)))  # n, win, top 3
+    for race in races:
+        placed = _placed(race)
+        for i, cell in enumerate(_cells(race)):
+            if cell in first or cell in second:
+                s = sums[race.riders[i]][0 if cell in first else 1]
+                s += (1, placed[i, 0] - race.prob[i, 0], placed[i, 2] - race.prob[i, 2])
+    kept = np.array(
+        [s for s in sums.values() if s[:, 0].min() >= WITHIN_RIDER_MIN], dtype=float
+    ).reshape(-1, 2, 3)
+    out: dict[str, Any] = {"riders": len(kept), "min_rides": WITHIN_RIDER_MIN}
+    if len(kept) < 3:
+        return out
+    n_first, n_second = kept[:, 0, 0], kept[:, 1, 0]
+    weight = n_first * n_second / (n_first + n_second)
+    diff = kept[:, 0, 1:] / n_first[:, None] - kept[:, 1, 1:] / n_second[:, None]
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(n_boot):
+        pick = rng.integers(0, len(kept), len(kept))
+        boots.append((weight[pick, None] * diff[pick]).sum(axis=0) / weight[pick].sum())
+    point = (weight[:, None] * diff).sum(axis=0) / weight.sum()
+    out["rides"] = [int(n_first.sum()), int(n_second.sum())]
+    for k, outcome in enumerate(("win", "top3")):
+        ci = np.percentile(np.array(boots)[:, k], [2.5, 97.5]) if boots else (math.nan,) * 2
+        out[outcome] = {"value": _value(point[k]), "ci95": [_value(v) for v in ci]}
+    return out
+
+
+SEGMENTS = {
+    "A級": lambda r: r.group == "A",
+    "S級7車": lambda r: r.group == "S" and len(r.pos) == 7,
+    "S級9車": lambda r: r.group == "S" and len(r.pos) == 9,
+    "決勝": lambda r: r.final,
+    "決勝以外": lambda r: not r.final,
+    "オッズパーク": lambda r: r.source == "oddspark",
+    "KEIRIN.JP": lambda r: r.source == "keirin.jp",
+}
+
+
+def line_position_summary(
+    races: list[LineRace], *, n_boot: int = 2000, seed: int = 0
+) -> dict[str, Any]:
+    """Aggregates for docs/line-positions.md (keirin-research CAND-002..009)."""
+    totals = _Totals(races, n_boot=n_boot, seed=seed)
+
+    def value(stat) -> float | None:
+        return totals.value(stat)
+
+    def count(*names: str) -> int:
+        return int(value(lambda t: t(*names)) or 0)
+
+    in_fought_line = ("contested", "contested_head", "contested_other")
+    winner_share = {
+        name: value(lambda t, c=cells: _ratio(t(*[f"win:{x}" for x in c]), t("races")))
+        for name, cells in (POSITIONS | {"contested_line": in_fought_line}).items()
+        if not name.startswith("contested") or name == "contested_line"
+    }
+    back_line = {
+        "lines": count("bl:n"),
+        **{
+            f"{who}_{what}": value(lambda t, k=f"bl:{who}_{what}": _ratio(t(k), t("bl:n")))
+            for who in ("head", "second")
+            for what in ("win", "ewin", "top3")
+        },
+        "races_with_back": count("b:n"),
+        "winner_is_back_rider": value(lambda t: _ratio(t("b:self_win"), t("b:n"))),
+        "back_rider_in_a_line": {
+            "races": count("b:multi_n"),
+            "winner_from_the_line": totals.estimate(
+                lambda t: _ratio(t("b:multi_line_win"), t("b:multi_n"))
+            ),
+        },
+        "home": {
+            "races": count("h:n"),
+            "winner_from_the_line": totals.estimate(lambda t: _ratio(t("h:line_win"), t("h:n"))),
+        },
+    }
+    after_home = {
+        who: {
+            "lines": count(f"ah:{who}:n"),
+            **{
+                f"{rider}_{what}": value(
+                    lambda t, k=f"ah:{who}:{rider}_{what}", n=f"ah:{who}:n": _ratio(t(k), t(n))
+                )
+                for rider in ("head", "second")
+                for what in ("win", "top3")
+            },
+        }
+        for who in _AFTER_HOME
+    }
+    pairs: dict[str, Any] = {
+        near: {
+            "pairs": count(f"pr:{near}:n"),
+            "both_top3": value(lambda t, k=near: _ratio(t(f"pr:{k}:obs"), t(f"pr:{k}:n"))),
+            "expected": value(lambda t, k=near: _ratio(t(f"pr:{k}:exp"), t(f"pr:{k}:n"))),
+            "excess": totals.estimate(_pair_excess(near)),
+        }
+        for near in _NEARNESS
+    }
+    pairs["region_minus_other"] = totals.estimate(
+        _minus(_pair_excess("region"), _pair_excess("other"))
+    )
+
+    def favourite(kind: str):
+        return lambda t: _ratio(t(f"fav:{kind}:win") - t(f"fav:{kind}:ewin"), t(f"fav:{kind}:n"))
+
+    fought = [r for r in races if any(r.fight)]
+    plain = [r for r in races if not any(r.fight)]
+
+    def median_exacta(members: list[LineRace], field: int) -> dict[str, Any]:
+        paid = [float(np.mean(r.exacta)) for r in members if r.exacta and len(r.pos) == field]
+        return {"races": len(paid), "median": _value(statistics.median(paid)) if paid else None}
+
+    contested = {
+        "races": {"contested": len(fought), "other": len(plain)},
+        "log_trifecta": totals.estimate(_payout_gap("x3")),
+        "favourite_win_excess": {
+            "contested": totals.estimate(favourite("c")),
+            "other": totals.estimate(favourite("p")),
+            "difference": totals.estimate(_minus(favourite("c"), favourite("p"))),
+        },
+        "median_exacta": {
+            f"{field}車": {
+                "contested": median_exacta(fought, field),
+                "other": median_exacta(plain, field),
+            }
+            for field in (7, 9)
+        },
+    }
+    score_rank = {
+        "model_fit": {
+            str(rank): {
+                "riders": count(f"rk:all:{rank}:n"),
+                **{
+                    outcome: value(
+                        lambda t, r=rank, o=outcome: _ratio(
+                            t(f"rk:all:{r}:{o}"), t(f"rk:all:{r}:n")
+                        )
+                    )
+                    for outcome in ("win", "top3")
+                },
+            }
+            for rank in range(1, SCORE_RANK_BINS + 1)
+        },
+        "standardized": {
+            role: {o: totals.estimate(_rank_standardized(role, o)) for o in ("win", "top3")}
+            for role in _ROLES
+        },
+        "second_minus_head_win": totals.estimate(
+            _minus(_rank_standardized("second", "win"), _rank_standardized("head", "win"))
+        ),
+    }
+    in_line = tuple(
+        c for name in ("head", "second", "third", "fourth_plus") for c in POSITIONS[name]
+    )
+    segments = {}
+    for name, keep in SEGMENTS.items():
+        members = [r for r in races if keep(r)]
+        segments[name] = {
+            "races": len(members),
+            "decisions": _decisions(_Totals(members, n_boot=n_boot, seed=seed)),
+        }
+    return {
+        "races": len(races),
+        "practical": {
+            "win": POSITION_WIN_PRACTICAL,
+            "top3": POSITION_TOP3_PRACTICAL,
+            "back_line": BACK_LINE_PRACTICAL,
+            "pair": PAIR_PRACTICAL,
+            "log_payout": PAYOUT_PRACTICAL,
+        },
+        "decisions": _decisions(totals),
+        "positions": {name: _cell_report(totals, cells) for name, cells in POSITIONS.items()},
+        "by_line_size": {
+            cell: _cell_report(totals, (cell,))
+            for name in POSITIONS
+            for cell in POSITIONS[name]
+            if "_" in cell and not cell.startswith("contested")
+        },
+        "winner_share": winner_share,
+        "one_two": {
+            "same_line_first_two": value(lambda t: _ratio(t("ot:same12"), t("races"))),
+            "same_line_first_three": value(lambda t: _ratio(t("ot:same123"), t("races"))),
+        },
+        "back_line": back_line,
+        "after_home": after_home,
+        "pairs": pairs,
+        "contested": contested,
+        "score_rank": score_rank,
+        "within_rider": {
+            "solo_minus_in_line": within_rider(
+                races, POSITIONS["solo"], in_line, n_boot=n_boot, seed=seed
+            ),
+            "second_minus_head": within_rider(
+                races, POSITIONS["second"], POSITIONS["head"], n_boot=n_boot, seed=seed
+            ),
+        },
+        "segments": segments,
     }
