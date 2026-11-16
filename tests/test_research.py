@@ -540,3 +540,276 @@ def test_loader_fills_the_line_factors(tmp_path):
     assert {r.own_size for r in rows} == {3}
     assert {r.opp_max for r in rows} == {2}
     assert rows[0].gap == pytest.approx(3.0)  # winner scores 89, best outside the line 86
+
+
+# --- line positions --------------------------------------------------------------------------
+
+
+def test_order_probabilities_match_the_prediction_model():
+    rng = np.random.default_rng(5)
+    theta = rng.normal(scale=0.3, size=N_PARAMS)
+    for n in (3, 7, 9):
+        x = rng.normal(size=(n, K))
+        orders = research.top3_order_probabilities(theta, x)
+        assert orders.sum() == pytest.approx(1.0)
+        assert orders[0, 0].sum() == 0.0 and orders[1, :, 1].sum() == 0.0  # no rider twice
+        prob, pairs = research.expected_places(theta, x)
+        assert np.allclose(prob, predict.race_probabilities(theta, x), atol=1e-9)
+        assert np.allclose(pairs, research.pair_top3_probabilities(theta, x), atol=1e-9)
+
+
+def write_payouts(data_dir, day, rows):
+    path = storage.table_path(data_dir, "payouts", day)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=storage.TABLES["payouts"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({"date": day.isoformat(), "combination": "1-2", **row})
+
+
+def line_day(tmp_path, text, riders, race_class="Ａ級予選", payouts=()):
+    write_day(tmp_path, DAY, {("01", 1): (race_class, riders)}, formation_rows("01", 1, text))
+    write_payouts(tmp_path, DAY, [{"venue_code": "01", "race_no": 1, **p} for p in payouts])
+    return research.load_line_races(tmp_path, DAY, DAY + timedelta(days=1), model_for("A", "S"))
+
+
+def test_line_race_reads_the_formation_the_result_and_the_payouts(tmp_path):
+    riders = seven()
+    riders[0]["bh"], riders[3]["bh"] = "H", "B"
+    payouts = [
+        {"bet_type": "2車単", "payout": 1230, "popularity": 4},
+        {"bet_type": "3連単", "payout": 9870, "popularity": 30},
+        {"bet_type": "ワイド", "payout": 200, "popularity": 1},
+    ]
+    [race] = line_day(tmp_path, "123/45/6", riders, "Ａ級決勝", payouts)
+    assert research._cells(race) == [
+        "head_3", "second_3", "third_3", "head_2", "second_2", "solo", "solo",
+    ]  # fmt: skip
+    assert len(set(race.line)) == 4  # car 7 is not in the formation: alone, a line of its own
+    assert race.order == (0, 1, 2) and race.final and race.source == "keirin.jp"
+    assert (race.home, race.back) == (0, 3)
+    assert race.exacta == (1230.0,) and race.trifecta == (9870.0,)
+    assert race.prob.sum(axis=0) == pytest.approx([1.0, 2.0, 3.0])
+
+
+def test_line_race_cells_of_a_contested_line(tmp_path):
+    [race] = line_day(tmp_path, "1(23)4/567", seven(), "Ａ級準決勝")
+    assert research._cells(race) == [
+        "contested_head", "contested", "contested", "contested_other",
+        "head_3", "second_3", "third_3",
+    ]  # fmt: skip
+    assert not race.final and race.back is None
+
+
+def test_line_race_closes_gaps_and_skips_girls(tmp_path):
+    riders = seven(c2=None)
+    riders[1]["notes"] = "欠場"
+    riders[0]["bh"] = riders[2]["bh"] = "B"  # two riders with B: unknown
+    [race] = line_day(tmp_path, "1234/567", riders)
+    assert research._cells(race)[:3] == ["head_3", "second_3", "third_3"]
+    assert race.back is None and race.order == (0, 1, 2)
+    assert line_day(tmp_path, "1/2/3/4/5/6/7", seven(), "Ｌ級ガ予") == []
+
+
+def made(text, order, *, day=DAY, group="A", back=None, home=None, prefectures=None, **fields):
+    """A LineRace for a formation such as "1(23)4/56/7"; entries are the cars 1..n in order
+    and every rider is equally strong."""
+    rows = sorted(formation_rows("01", 1, text), key=lambda r: r["car_no"])
+    n = len(rows)
+    pair = np.full((n, n), 6 / (n * (n - 1)))
+    np.fill_diagonal(pair, 0.0)
+    return research.LineRace(
+        day, group, fields.pop("final", False), fields.pop("source", "oddspark"),
+        tuple(r["line_pos"] for r in rows), tuple(r["line_size"] for r in rows),
+        tuple(r["contested"] for r in rows), tuple(r["line_no"] for r in rows),
+        fields.pop("scores", tuple(90.0 - i for i in range(n))),
+        fields.pop("riders", tuple(f"R{i}" for i in range(n))),
+        prefectures or ("東京",) * n,
+        np.tile([1 / n, 2 / n, 3 / n], (n, 1)), pair, order, back, home, **fields,
+    )  # fmt: skip
+
+
+def test_race_columns_count_positions_and_the_back_line():
+    race = made(
+        "123/45/67", (1, 0, 3), back=0, home=0,
+        prefectures=("東京", "東京", "埼玉", "大阪", "福岡", "イギリ", "東京"),
+        exacta=(1000.0,),
+    )  # fmt: skip
+    c = research._race_columns(race)
+    assert c["n:head_3"] == 1 and c["n:head_2"] == 2 and c["n:third_3"] == 1
+    assert c["win:second_3"] == 1 and c["top3:head_2"] == 1 and c["top2:head_3"] == 1
+    assert c["ewin:second_2"] == pytest.approx(2 / 7)
+    assert (c["ot:same12"], c["ot:same123"]) == (1, 0)
+    assert (c["b:n"], c["b:line_win"], c["b:self_win"], c["b:multi_n"]) == (1, 1, 0, 1)
+    assert (c["bl:n"], c["bl:second_win"], c["bl:head_win"], c["bl:head_top3"]) == (1, 1, 0, 1)
+    assert c["ah:same:n"] == 1 and c["ah:same:second_win"] == 1
+    assert c["pr:prefecture:n"] == 1 and c["pr:prefecture:obs"] == 1  # 東京 - 東京
+    assert c["pr:other:n"] == 1 and c["pr:other:obs"] == 0  # 大阪 - 福岡
+    assert c["pr:region:n"] == 0  # the foreign rider's pair is left out
+    assert c["x2:A7:pn"] == 1 and c["x2:A7:plog"] == pytest.approx(math.log(1000))
+    assert c["fav:p:n"] == 1 and c["fav:p:win"] == 0  # entry 0 has the top score
+    assert c["rk:second:2:win"] == pytest.approx(1 - 1 / 7)
+
+
+def test_race_columns_tell_who_took_the_back_after_the_home():
+    def who(back):
+        c = research._race_columns(made("123/45/67", (0, 1, 2), back=back, home=0))
+        return [name for name in ("same", "second", "behind", "other") if c[f"ah:{name}:n"]]
+
+    assert [who(0), who(1), who(2), who(3)] == [["same"], ["second"], ["behind"], ["other"]]
+    c = research._race_columns(made("(12)3/45/67", (0, 1, 2), back=0, home=3, exacta=(500.0,)))
+    assert c["bl:n"] == 0 and c["b:line_win"] == 1  # a contested head is not a clean head
+    assert c["x2:A7:cn"] == 1 and c["fav:c:win"] == 1
+
+
+def simulated(n=400, **changes):
+    """Seconds always win, heads come 2nd, the third of the long line 3rd; solos never place."""
+    return [
+        made("123/45/6/7", (1, 0, 2), day=DAY + timedelta(days=i // 20), back=0, **changes)
+        for i in range(n)
+    ]
+
+
+def test_summary_decides_the_position_effects():
+    summary = research.line_position_summary(simulated(), n_boot=100)
+    decisions = summary["decisions"]
+    assert decisions["second_minus_head_win"]["value"] == pytest.approx(0.5)
+    assert decisions["second_minus_head_win"]["decision"] == "正の効果"
+    assert decisions["back_line_second_minus_head_win"]["value"] == pytest.approx(1.0)
+    assert decisions["third_win"]["decision"] == "負の効果"
+    assert decisions["third_top3"]["value"] == pytest.approx(1 - 3 / 7, abs=1e-4)
+    assert decisions["solo_top3"]["decision"] == "負の効果"
+    assert decisions["solo_win"]["value"] == pytest.approx(-1 / 7, abs=1e-4)
+    assert decisions["long_line_front_win"]["decision"] == "正の効果"  # 123 beats 45
+    assert decisions["long_line_front_top3"]["value"] == pytest.approx(1.0)
+    assert decisions["back_line_winner_share"]["decision"] == "主張と違う"  # always: 1.0
+    assert decisions["contested_log_exacta"]["decision"] == "保留"  # no payouts
+    assert summary["positions"]["second"]["win"]["rate"] == pytest.approx(0.5)
+    assert summary["positions"]["second"]["riders"] == 800
+    assert summary["by_line_size"]["second_3"]["win"]["excess"]["value"] > 0.8
+    assert summary["winner_share"] == {
+        "head": 0.0, "second": 1.0, "third": 0.0, "fourth_plus": 0.0, "solo": 0.0,
+        "contested_line": 0.0,
+    }  # fmt: skip
+    assert summary["one_two"] == {"same_line_first_two": 1.0, "same_line_first_three": 1.0}
+    assert summary["back_line"]["lines"] == 400 and summary["back_line"]["second_win"] == 1.0
+    assert summary["segments"]["A級"]["races"] == 400
+    assert summary["segments"]["S級9車"]["races"] == 0
+    assert summary["segments"]["オッズパーク"]["decisions"]["solo_top3"]["decision"] == "負の効果"
+    text = json.dumps(summary)
+    assert "NaN" not in text and "Infinity" not in text
+
+
+def test_summary_without_effects_stays_near_zero():
+    rng = np.random.default_rng(11)
+    races = [
+        made(
+            "123/45/6/7",
+            tuple(int(i) for i in rng.permutation(7)[:3]),
+            day=DAY + timedelta(days=i // 50),
+            back=int(rng.integers(0, 7)),
+        )
+        for i in range(2000)
+    ]
+    summary = research.line_position_summary(races, n_boot=200)
+    for name in ("second_minus_head_win", "third_win", "solo_top3", "long_line_front_top3"):
+        assert abs(summary["decisions"][name]["value"]) < 0.04
+        lo, hi = summary["decisions"][name]["ci95"]
+        assert lo < hi and hi - lo < 0.12
+    standardized = summary["score_rank"]["standardized"]
+    assert abs(standardized["solo"]["top3"]["value"]) < 0.01  # a rank holds one position here
+    assert summary["score_rank"]["model_fit"]["7"]["riders"] == 2000
+
+
+def test_summary_compares_contested_races_and_home_regions():
+    races = []
+    for i in range(80):
+        day = DAY + timedelta(days=i // 4)
+        if i % 2:
+            races.append(made("1(23)/45/6/7", (3, 4, 5), day=day, exacta=(2000.0,)))
+        else:
+            races.append(
+                made(
+                    "12/34/5/6/7",
+                    (0, 1, 2),
+                    day=day,
+                    exacta=(1000.0,),
+                    trifecta=(5000.0,),
+                    prefectures=("東京", "東京", "大阪", "福岡", "東京", "東京", "東京"),
+                )  # fmt: skip
+            )
+    summary = research.line_position_summary(races, n_boot=100)
+    exacta = summary["decisions"]["contested_log_exacta"]
+    assert exacta["value"] == pytest.approx(math.log(2), abs=1e-4)
+    assert exacta["decision"] == "正の効果"
+    assert summary["contested"]["races"] == {"contested": 40, "other": 40}
+    assert summary["contested"]["median_exacta"]["7車"]["contested"] == {
+        "races": 40, "median": 2000.0,
+    }  # fmt: skip
+    assert summary["contested"]["log_trifecta"]["value"] is None  # no contested trifecta
+    assert summary["contested"]["favourite_win_excess"]["difference"]["value"] == pytest.approx(-1)
+    pair = summary["decisions"]["same_prefecture_pair"]
+    assert pair["value"] == pytest.approx(1.0) and pair["decision"] == "正の効果"
+    assert summary["pairs"]["prefecture"]["pairs"] == 80  # 12 of one race, 45 of the other
+    assert summary["pairs"]["other"]["pairs"] == 40
+    assert summary["positions"]["contested"]["riders"] == 80
+    assert summary["positions"]["contested_head"]["top3"]["rate"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "ci, halves, expected",
+    [
+        ((0.78, 0.82), (0.79, 0.81), "主張どおり"),
+        ((0.60, 0.65), (0.62, 0.63), "主張と違う"),
+        ((0.90, 0.95), (0.91, 0.93), "主張と違う"),
+        ((0.60, 0.65), (0.62, 0.80), "保留"),
+        ((0.72, 0.78), (0.74, 0.76), "保留"),
+    ],
+)
+def test_decide_share(ci, halves, expected):
+    assert research.decide_share(ci, halves) == expected
+
+
+def test_within_rider_compares_the_same_rider_in_two_positions():
+    races = []
+    for i in range(60):
+        names = [f"R{k}" for k in range(7)]
+        if i % 2:  # R5 rides alone and loses
+            races.append(made("12/34/5/6/7", (0, 1, 2), riders=tuple(names)))
+        else:  # R5 heads a line and wins
+            names[0], names[5] = names[5], names[0]
+            races.append(made("12/34/5/6/7", (0, 1, 2), riders=tuple(names)))
+    result = research.within_rider(
+        races, research.POSITIONS["solo"], research.POSITIONS["head"], n_boot=50
+    )
+    assert result["riders"] == 2  # R5 and R0 swap; too few riders for an estimate
+    extra = [
+        made("12/34/5/6/7", (0, 1, 2), riders=("X", "a", "b", "c", "Y", "d", "e")) for _ in range(6)
+    ] + [
+        made("12/34/5/6/7", (0, 1, 2), riders=("Y", "a", "b", "c", "X", "d", "e")) for _ in range(6)
+    ]
+    result = research.within_rider(
+        races + extra, research.POSITIONS["solo"], research.POSITIONS["head"], n_boot=50
+    )
+    assert result["riders"] == 4 and result["min_rides"] == 5
+    assert result["win"]["value"] == pytest.approx(-1.0)  # alone: never; as a head: always
+    assert result["top3"]["ci95"] == [pytest.approx(-1.0), pytest.approx(-1.0)]
+
+
+def test_cli_line_positions_prints_aggregates_only(tmp_path, capsys):
+    train_day = DAY - timedelta(days=1)
+    write_day(tmp_path, train_day, {("01", r): ("Ａ級予選", seven()) for r in range(1, 6)})
+    write_day(
+        tmp_path,
+        DAY,
+        {("01", 1): ("Ａ級予選", seven()), ("01", 2): ("Ａ級予選", seven(c1=4, c4=1))},
+        formation_rows("01", 1, "123/45/67") + formation_rows("01", 2, "14/23/567"),
+    )
+    args = ["line-positions", "--date", DAY.isoformat(), "--to", DAY.isoformat(), "--days", "3"]
+    assert cli.main([*args, "--min-races", "1", "--boot", "20", "--data-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert result["races"] == 2 and result["model"]["races"] == {"A": 5}
+    assert set(result["decisions"]) == {*research.PRIMARY, "back_line_winner_share"}
+    assert "000001" not in out and "テスト" not in out and "東京" not in out
+    assert "NaN" not in out and "Infinity" not in out

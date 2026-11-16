@@ -185,6 +185,7 @@ uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --rating --data-dir ../
 uv run keirin predict-eval --date 2026-09-28 --to 2026-10-04 --data-dir ../keirin-data   # 予想の評価（前日までで学習）
 uv run keirin line-linkage --date 2026-10-05 --to 2026-10-30 --data-dir ../keirin-data   # ラインの連動の検証（keirin-research の LAW-001、JSON）
 uv run keirin car-order --date 2025-08-24 --to 2026-10-30 --data-dir ../keirin-data      # 車番の配置と1番車の効果（keirin-research の RULE-004・005、CAND-031、JSON）
+uv run keirin line-positions --date 2025-08-24 --to 2026-11-15 --days 224 --data-dir ../keirin-data  # ラインの位置・人数・競り・地区の検証（keirin-research の CAND-002〜009、JSON。docs/line-positions.md）
 YOUTUBE_API_KEY=... uv run keirin public-streams --out streams.json   # 公開版マルチビューの配信一覧（YouTube だけ）
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
@@ -206,7 +207,7 @@ src/keirin/
   lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）、位置のラベル、
                     府県（地区）からの並びの推定（guess_formation）
   predict.py        予想（Plackett–Luce。特徴、学習、1着・2着以内・3着以内の確率、評価）。docs/prediction.md
-  research.py       keirin-research の検証（ラインの連動、車番の配置と1番車の効果）。集計値だけを JSON で出す
+  research.py       keirin-research の検証（ラインの連動、車番の配置と1番車の効果、追走の千切れ、ラインの位置・人数・競り・地区）。集計値だけを JSON で出す
   notify.py         注目選手の出走通知（watchlist.toml の照合、Discord の Webhook、送信済みの記録）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）
@@ -259,6 +260,8 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   `backfill-lines` は昨日分のメイン収集が欠けると待つため、毎朝の収集が遅れた日は動かない。手元では `lines.backfill` を範囲を指定して直接呼んで回した（`--until` を足す案は、遡りを続けるなら入れる）。
 - 2026-11-12 **追走の千切れの検証**（オーナーの観察から）を行い、keirin-research に LAW-002（捲り勝ちの後ろは千切れやすい、+13.1 ポイント）、LAW-003（自分のライン人数 −5.4、相手の最長ライン +4.6、得点差 −2.3）、CAND-037（個人差、後半で再現せず保留）、TERM-004 を登録した。
   千切れはオーナー定義（先頭側が捲りで勝ち、後ろが3着圏外）。経緯と手順は [docs/chase-break.md](docs/chase-break.md)、スクリプトは `research.py` の `keirin chase-break`。要因（相手の強さ、ライン数、相手の最長ライン）はオーナーの指摘で加えた。
+- 2026-11-16 **並びを待って保留にしていた候補（keirin-research の CAND-002〜009）の検証を設計した**（オーナーの依頼「並びまで揃っているデータで分析」）。本物の並びは 2025-08-24〜2026-11-15 の男子 30,923 レース。
+  問い・そろえる要因・主の指標・実質的な大きさは、集計の前に [docs/line-positions.md](docs/line-positions.md) に書いた。位置の有利不利は、得点だけの順位ロジット（並びの期間より前の 2025-01-12〜08-23 で学習）の見込みとの差で測る。スクリプトは `research.py` の `keirin line-positions`。
 - 2026-10-04 1回あたりの収集日数を10日から15日に増やした（オーナー判断）。JSJ002 で1日のリクエストが減ったので、1回あたりのアクセス量は以前と同じくらい。backfill は11月上旬から10/24ごろに前倒し。
 - 2026-10-04 出走表の取得を JSJ002（開催ごとに1回）に切り替えた（オーナー承認）。サイトへのアクセスが約4割減る。GitHub 調査で知り、自分たちで確かめた。
   並び（ライン）の収集は、ほかの投票サイトからも取れるので急がない（オーナー判断）。
@@ -376,6 +379,7 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [x] keirin-research v1（2026-11-01。オーナーの要望 11.）。知識 53件、候補 35件、スキル5つ。評価（T1〜T8）はまだ回していない（API キーが要るため。オーナー判断で後回し）
 - [ ] keirin-research: 遡りが終わる 2026-12 下旬に、雨・風の個人差（CAND-020）と 1番車の効果（CAND-031）など、候補を確かめ直す
 - [ ] keirin-research: 本物の並びが半年分たまる 2027-04 ごろ（オッズパークの取得が再開すれば早まる）に、ライン関係の候補を確かめる。ラインの連動（LAW-001）は位置の効果を入れたモデルとも比べる
+- [ ] ラインの位置・人数・競り・地区の検証（docs/line-positions.md）: 設計メモをオーナーが見たあと、実データで `keirin line-positions` を回し、結果を docs と keirin-research に残す
 - [ ] keirin-research: 2026-11-05 以降のデータで、LAW-002・LAW-003 を確かめ直す。CAND-037（追走力の個人差）は 2027-04 ごろ
 - [ ] keirin-research: 評価（`claude plugin eval`、T1〜T8）を回す（API キーを用意したとき）
 - [ ] 検討: このリポジトリに AGENTS.md を作り、Codex からも keirin-research を指す
