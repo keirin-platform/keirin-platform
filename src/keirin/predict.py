@@ -14,8 +14,9 @@ formation (tables/lines) when there is one, and otherwise guesses it from the
 riders' regions (`lines.guess_formation`). Girls' keirin has no lines: every
 rider of an L級 race rides alone.
 
-A fit uses DEFAULT_FEATURES. The other line features are candidates that
-`walk_forward` and `compare` score against it on later days (`keirin predict-compare`).
+A fit uses DEFAULT_FEATURES. `walk_forward` and `compare` score groups of line
+features (CANDIDATES) against the model without them on later days
+(`keirin predict-compare`); the four groups of 2026-11-17 were adopted that way.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ LINE_FEATURES = (
     "third_x_head",
     "head_size",  # leader x (line size - 2)
     "head_chaser",  # leader whose style is 追
-    # candidates (docs/prediction.md, 2026-11-17): a fit leaves them out unless asked
+    # the groups compared in docs/prediction.md (2026-11-17, all adopted)
     "second_size",  # 番手 x (line size - 2)
     "third_size",  # 3番手 x (line size - 3)
     "fourth_plus",  # 4番手 or further back (on top of third_plus)
@@ -82,7 +83,7 @@ MIN_RACES = 100
 L2 = 1e-3
 TRAINING_DAYS = 120  # the viewer fits on the latest collected days only (fit time)
 
-CANDIDATES = {  # groups of line features a comparison adds to the base model
+CANDIDATES = {  # groups of line features `variants` adds to the base model
     "size": ("second_size", "third_size", "fourth_plus"),
     "contest": ("contested", "head_contested"),
     "lead": ("second_x_head_back",),
@@ -90,7 +91,7 @@ CANDIDATES = {  # groups of line features a comparison adds to the base model
 }
 FRONT_NEAR = 2  # S counts within this of the largest count as "about the same"
 BASE_FEATURES = tuple(f for f in FEATURES if not any(f in group for group in CANDIDATES.values()))
-DEFAULT_FEATURES = BASE_FEATURES  # what `fit` uses (the viewer's model)
+DEFAULT_FEATURES = FEATURES  # what `fit` uses (the viewer's model): the base and every group
 
 
 def group_of(race_class: str | None) -> str | None:
@@ -579,9 +580,10 @@ SEGMENTS = ("men", "A", "S", "S7", "S9", "contested")
 
 
 def variants(candidates: dict[str, tuple[str, ...]] | None = None) -> dict[str, tuple[str, ...]]:
-    """The base model ("now") and every combination of candidate groups added to it."""
+    """The base model ("base": no candidate group) and every combination of candidate
+    groups added to it."""
     candidates = CANDIDATES if candidates is None else candidates
-    out = {"now": BASE_FEATURES}
+    out = {"base": BASE_FEATURES}
     for r in range(1, len(candidates) + 1):
         for combo in itertools.combinations(candidates, r):
             out["+".join(combo)] = BASE_FEATURES + tuple(f for g in combo for f in candidates[g])
@@ -711,7 +713,7 @@ def decide_feature(
 
 
 def compare(
-    scored: list[Scored], *, base: str = "now", n_boot: int = 2000, seed: int = 0
+    scored: list[Scored], *, base: str = "base", n_boot: int = 2000, seed: int = 0
 ) -> dict[str, Any]:
     """How the variants score the same races, against `base` (aggregates only).
 

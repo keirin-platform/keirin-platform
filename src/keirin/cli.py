@@ -193,6 +193,12 @@ def cmd_predict_eval(args: argparse.Namespace) -> int:
 
 def cmd_predict_compare(args: argparse.Namespace) -> int:
     columns = predict.variants()
+    if args.variants:
+        unknown = [name for name in args.variants if name not in columns]
+        if unknown:
+            log.error("unknown variants %s (choose from %s)", unknown, ", ".join(columns))
+            return 1
+        columns = {name: columns[name] for name in ("base", *args.variants) if name in columns}
     races = predict.load_races(
         args.data_dir, start=args.date - timedelta(days=args.days), end=args.to + timedelta(days=1)
     )
@@ -491,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--days", type=int, default=predict.TRAINING_DAYS, help="fit on this many days before"
     )
     p.add_argument("--step", type=int, default=14, help="refit every this many days")
+    p.add_argument(
+        "--variants",
+        nargs="+",
+        help="compare only these variants with the base (default: every combination)",
+    )
     p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
     p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
     p.add_argument("--data-dir", type=Path, default=Path("."))

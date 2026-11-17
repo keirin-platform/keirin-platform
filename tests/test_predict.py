@@ -308,10 +308,11 @@ def test_fit_with_selected_columns_ignores_the_others():
     assert fitted[CARD_FEATURES.index("win")] == 0
 
 
-def test_fit_leaves_the_candidate_features_out_unless_asked():
+def test_fit_uses_every_feature_unless_told_which():
     races = simulate(params(b_score=1.0, g1_second_size=1.0), races=600, field=7)
     at = len(CARD_FEATURES) + LINE_FEATURES.index("second_size")
-    assert predict.fit(races).params["A"][at] == 0
+    assert predict.fit(races).params["A"][at] == pytest.approx(1.0, abs=0.25)
+    assert predict.fit(races, columns=predict.BASE_FEATURES).params["A"][at] == 0
     asked = predict.fit(races, columns=predict.variants()["size"])
     assert asked.params["A"][at] == pytest.approx(1.0, abs=0.25)
 
@@ -319,14 +320,15 @@ def test_fit_leaves_the_candidate_features_out_unless_asked():
 def test_variants_are_the_base_and_every_combination_of_candidates():
     v = predict.variants()
     assert list(v) == [
-        "now", "size", "contest", "lead", "start",
+        "base", "size", "contest", "lead", "start",
         "size+contest", "size+lead", "size+start", "contest+lead", "contest+start", "lead+start",
         "size+contest+lead", "size+contest+start", "size+lead+start", "contest+lead+start",
         "size+contest+lead+start",
     ]  # fmt: skip
-    assert v["now"] == predict.BASE_FEATURES == predict.DEFAULT_FEATURES
-    assert "second_size" not in v["now"] and "second" in v["now"]
-    assert set(v["size+lead"]) - set(v["now"]) == {
+    assert v["base"] == predict.BASE_FEATURES
+    assert predict.DEFAULT_FEATURES == FEATURES  # the viewer's model has every group
+    assert "second_size" not in v["base"] and "second" in v["base"]
+    assert set(v["size+lead"]) - set(v["base"]) == {
         "second_size", "third_size", "fourth_plus", "second_x_head_back",
     }  # fmt: skip
     assert set(v["size+contest+lead+start"]) == set(FEATURES)
@@ -567,7 +569,7 @@ def test_walk_forward_fits_on_the_days_before_each_block(monkeypatch):
     monkeypatch.setattr(predict, "fit", recording)
     scored = predict.walk_forward(
         races, first + timedelta(days=10), first + timedelta(days=30),
-        columns={"now": predict.BASE_FEATURES}, days=10, step=10, min_races=10,
+        columns={"base": predict.BASE_FEATURES}, days=10, step=10, min_races=10,
     )  # fmt: skip
     assert seen == [
         (first, first + timedelta(days=9)),
@@ -575,13 +577,13 @@ def test_walk_forward_fits_on_the_days_before_each_block(monkeypatch):
     ]
     assert len(scored) == 400 and min(s.race.day for s in scored) == first + timedelta(days=10)
     for s in scored[:5]:
-        assert s.probs["now"].shape == (5, 3)
-        np.testing.assert_allclose(s.probs["now"].sum(axis=0), [1.0, 2.0, 3.0])
+        assert s.probs["base"].shape == (5, 3)
+        np.testing.assert_allclose(s.probs["base"].sum(axis=0), [1.0, 2.0, 3.0])
 
 
 def test_fit_starts_from_another_model():
     races = simulate(params(b_score=1.0, g1_second_size=1.0), races=600, field=7)
-    base = predict.fit(races)
+    base = predict.fit(races, columns=predict.BASE_FEATURES)
     cold = predict.fit(races, columns=predict.variants()["size"])
     warm = predict.fit(races, columns=predict.variants()["size"], init=base)
     np.testing.assert_allclose(warm.params["A"], cold.params["A"], atol=0.02)
@@ -593,7 +595,7 @@ def test_walk_forward_leaves_out_a_group_without_a_model():
     races += [Race("S", r.x, r.order, r.day) for r in races[:30]]  # too few to fit S
     scored = predict.walk_forward(
         races, first + timedelta(days=10), first + timedelta(days=20),
-        columns={"now": predict.BASE_FEATURES}, days=10, step=10, min_races=50,
+        columns={"base": predict.BASE_FEATURES}, days=10, step=10, min_races=50,
     )  # fmt: skip
     assert {s.race.group for s in scored} == {"A"}
 
@@ -618,7 +620,7 @@ def test_compare_adopts_a_feature_that_improves_the_later_days():
     first = date(2026, 9, 1)
     truth = params(b_score=1.0, g1_second_size=1.2, g23_second_size=1.2)
     races = dated(simulate(truth, races=2400, field=7), first, per_day=100)  # 24 days
-    columns = {k: v for k, v in predict.variants().items() if k in ("now", "size")}
+    columns = {k: v for k, v in predict.variants().items() if k in ("base", "size")}
     scored = predict.walk_forward(
         races, first + timedelta(days=12), first + timedelta(days=24),
         columns=columns, days=12, step=6, min_races=100,
@@ -629,23 +631,23 @@ def test_compare_adopts_a_feature_that_improves_the_later_days():
     assert size["decision"] == "入れる" and result["adopted"] == "size"
     assert size["change"] < -0.05 and size["ci95"][1] < 0 and max(size["halves"]) < 0
     men = result["variants"]["men"]
-    assert men["now"]["log_loss"]["change"] == 0 and "ci95" not in men["now"]["log_loss"]
+    assert men["base"]["log_loss"]["change"] == 0 and "ci95" not in men["base"]["log_loss"]
     assert men["size"]["brier_top3"]["change"] < 0
-    assert set(result["residuals"]) == {"now", "size"} == set(result["calibration"])
+    assert set(result["residuals"]) == {"base", "size"} == set(result["calibration"])
     assert list(result["decisions"]) == ["size"]  # the other candidates were not fitted
 
 
 def test_compare_does_not_adopt_a_feature_without_an_effect():
     first = date(2026, 9, 1)
     races = dated(simulate(params(b_score=1.0), races=2400, field=7), first, per_day=100)
-    columns = {k: v for k, v in predict.variants().items() if k in ("now", "lead")}
+    columns = {k: v for k, v in predict.variants().items() if k in ("base", "lead")}
     scored = predict.walk_forward(
         races, first + timedelta(days=12), first + timedelta(days=24),
         columns=columns, days=12, step=6, min_races=100,
     )  # fmt: skip
     result = predict.compare(scored, n_boot=200)
     assert result["decisions"]["lead"]["decision"] != "入れる"
-    assert result["adopted"] == "now"
+    assert result["adopted"] == "base"
     assert abs(result["decisions"]["lead"]["change"]) < 0.01
 
 
@@ -656,16 +658,16 @@ def test_compare_residuals_by_cell():
     x[2, COL["solo"]] = 1
     race = Race("A", x, (0, 1, 2), date(2026, 9, 1))
     even = np.tile([1 / 3, 2 / 3, 1.0], (3, 1))
-    scored = [predict.Scored(race, {"now": even}) for _ in range(4)]
+    scored = [predict.Scored(race, {"base": even}) for _ in range(4)]
     result = predict.compare(scored, n_boot=0)
-    cells = result["residuals"]["now"]["men"]
+    cells = result["residuals"]["base"]["men"]
     assert cells["head_2"] == {"riders": 4, "win": 0.6667, "top3": 0.0}
     assert cells["second_2"] == {"riders": 4, "win": -0.3333, "top3": 0.0}
     assert cells["solo"]["riders"] == 4
-    assert result["variants"]["men"]["now"]["log_loss"]["value"] == pytest.approx(
+    assert result["variants"]["men"]["base"]["log_loss"]["value"] == pytest.approx(
         math.log(3), abs=1e-4
     )
-    assert result["decisions"] == {} and result["adopted"] == "now"
+    assert result["decisions"] == {} and result["adopted"] == "base"
 
 
 def test_predict_compare_command(tmp_path, capsys):
@@ -687,6 +689,22 @@ def test_predict_compare_command(tmp_path, capsys):
     assert set(result["decisions"]) == {"size", "contest", "lead", "start"}
     assert len(result["variants"]["men"]) == 16
     assert "テスト" not in out and "racer" not in out  # aggregates only
+
+
+def test_predict_compare_with_chosen_variants(tmp_path, capsys):
+    import json
+
+    from keirin import cli
+    from keirin.timeutil import date_range
+
+    write_simple_days(tmp_path, list(date_range(date(2026, 9, 1), date(2026, 9, 20))))
+    args = ["predict-compare", "--date", "2026-09-11", "--to", "2026-09-20", "--days", "10",
+            "--min-races", "10", "--boot", "20", "--data-dir", str(tmp_path)]  # fmt: skip
+    assert cli.main([*args, "--variants", "size", "size+contest+lead+start"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert list(result["variants"]["men"]) == ["base", "size", "size+contest+lead+start"]
+    assert list(result["decisions"]) == ["size"]
+    assert cli.main([*args, "--variants", "nothing"]) == 1
 
 
 def test_predict_compare_without_training_data(tmp_path):
