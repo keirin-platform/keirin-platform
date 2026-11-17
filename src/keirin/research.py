@@ -782,34 +782,6 @@ _NEARNESS = ("prefecture", "region", "other")
 _AFTER_HOME = ("same", "second", "behind", "other")
 
 
-def top3_order_probabilities(theta: np.ndarray, x: np.ndarray) -> np.ndarray:
-    """(n, n, n): probability that riders a, b and c finish 1st, 2nd and 3rd.
-
-    The model of `predict.race_probabilities` as one array (three or more riders).
-    """
-    u1, u23, (t2, t3) = predict.utilities(theta, x)
-    n = len(x)
-    off = ~np.eye(n, dtype=bool)
-    p1 = np.exp(u1 - logsumexp(u1))
-    e2 = np.exp(t2 * u23 - (t2 * u23).max())
-    e3 = np.exp(t3 * u23 - (t3 * u23).max())
-    p2 = np.where(off, e2[None, :], 0.0)
-    p2 /= p2.sum(axis=1, keepdims=True)  # (a, b): b is second once a has won
-    free = off[:, :, None] & off[:, None, :] & off[None, :, :]  # a, b and c all differ
-    p3 = np.where(free, e3[None, None, :], 0.0)
-    left = p3.sum(axis=2, keepdims=True)
-    p3 = np.divide(p3, left, out=np.zeros_like(p3), where=left > 0)
-    return p1[:, None, None] * p2[:, :, None] * p3
-
-
-def expected_places(theta: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(n, 3) win / top 2 / top 3 and (n, n) both in the top 3, under the model."""
-    t = top3_order_probabilities(theta, x)
-    first, second, third = t.sum(axis=(1, 2)), t.sum(axis=(0, 2)), t.sum(axis=(0, 1))
-    m = t.sum(axis=2) + t.sum(axis=1) + t.sum(axis=0)
-    return np.column_stack([first, first + second, first + second + third]), m + m.T
-
-
 @dataclass(frozen=True)
 class LineRace:
     """A men's race with a real formation; one entry per rider who started."""
@@ -911,7 +883,7 @@ def _line_race(
         marked = [i for i, r in enumerate(riders) if flag in (r.get("bh") or "")]
         return marked[0] if len(marked) == 1 else None
 
-    prob, pair_prob = expected_places(theta, predict.feature_matrix(riders, {}))
+    prob, pair_prob = predict.expected_places(theta, predict.feature_matrix(riders, {}))
     return LineRace(
         day,
         group,

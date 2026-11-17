@@ -191,6 +191,29 @@ def cmd_predict_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_predict_compare(args: argparse.Namespace) -> int:
+    columns = predict.variants()
+    races = predict.load_races(
+        args.data_dir, start=args.date - timedelta(days=args.days), end=args.to + timedelta(days=1)
+    )
+    scored = predict.walk_forward(
+        races, args.date, args.to + timedelta(days=1),
+        columns=columns, days=args.days, step=args.step, min_races=args.min_races,
+    )  # fmt: skip
+    if not scored:
+        log.error("no race of %s..%s could be predicted from the days before", args.date, args.to)
+        return 1
+    result = {
+        "period": {"from": args.date.isoformat(), "to": args.to.isoformat()},
+        "training_days": args.days,
+        "step_days": args.step,
+        "added_features": predict.CANDIDATES,
+        **predict.compare(scored, n_boot=args.boot),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_line_linkage(args: argparse.Namespace) -> int:
     train = predict.load_races(
         args.data_dir, start=args.date - timedelta(days=args.days), end=args.date
@@ -439,6 +462,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_predict_eval)
+
+    p = sub.add_parser(
+        "predict-compare",
+        help="score candidate line features against the current model on later days (JSON)",
+    )
+    p.add_argument("--date", type=date.fromisoformat, required=True, help="first day to predict")
+    p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument(
+        "--days", type=int, default=predict.TRAINING_DAYS, help="fit on this many days before"
+    )
+    p.add_argument("--step", type=int, default=14, help="refit every this many days")
+    p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
+    p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_predict_compare)
 
     p = sub.add_parser(
         "line-linkage",
