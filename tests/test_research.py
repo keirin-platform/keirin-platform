@@ -893,6 +893,29 @@ def test_front_start_summary_compares_the_leading_line_in_front_and_not():
     assert summary["tables"]["near"]["S"]["lead"]["races"] == 0
 
 
+def test_front_start_summary_holds_the_line_sizes_fixed():
+    races = []
+    for i in range(40):
+        day = DAY + timedelta(days=i)
+        # 3-3 and a rider alone: in front or not, the leading line wins every other race
+        races.append(two_lines((0, 1, 2) if i % 2 else (3, 4, 5), (4, 0, 0, 0, 0, 0, 0), day=day))
+        races.append(two_lines((0, 1, 2) if i % 2 else (3, 4, 5), (0, 0, 0, 0, 6, 0, 0), day=day))
+        # 4-3: the long leading line is always expected in front and always wins
+        races.append(
+            two_lines((0, 1, 2), (4, 0, 0, 0, 0, 0, 0), day=day, text="1234/567",
+                      backs=(5, 0, 0, 0, 2, 0, 0))
+        )  # fmt: skip
+    summary = research.front_start_summary(races, n_boot=100)
+    raw = summary["tables"]["near"]["all"]["front_minus_not"]["lead_line_win_excess"]["value"]
+    adjusted = summary["size_adjusted"]["near"]["lead_line_win_excess"]
+    assert raw == pytest.approx(0.1786, abs=1e-4)  # the long line flatters the line in front
+    assert adjusted["value"] == pytest.approx(0.0, abs=1e-9)  # within 3-3 there is no difference
+    assert summary["line_sizes"]["3-3"] == {
+        "lead_in_front": 40, "other_in_front": 40, "lead_line_win_excess": 0.0,
+    }  # fmt: skip
+    assert summary["line_sizes"]["4-3"]["other_in_front"] == 0
+
+
 def test_cli_front_start_prints_aggregates_only(tmp_path, capsys):
     train_day = DAY - timedelta(days=1)
     write_day(tmp_path, train_day, {("01", r): ("Ａ級予選", seven()) for r in range(1, 6)})

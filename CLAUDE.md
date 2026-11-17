@@ -187,6 +187,7 @@ uv run keirin predict-compare --date 2025-12-22 --to 2026-11-15 --data-dir ../ke
 uv run keirin line-linkage --date 2026-10-05 --to 2026-10-30 --data-dir ../keirin-data   # ラインの連動の検証（keirin-research の LAW-001、JSON）
 uv run keirin car-order --date 2025-08-24 --to 2026-10-30 --data-dir ../keirin-data      # 車番の配置と1番車の効果（keirin-research の RULE-004・005、CAND-031、JSON）
 uv run keirin line-positions --date 2025-08-24 --to 2026-11-15 --days 224 --data-dir ../keirin-data  # ラインの位置・人数・競り・地区の検証（keirin-research の CAND-002〜009、JSON。docs/line-positions.md）
+uv run keirin front-start --date 2025-08-24 --to 2026-11-15 --days 224 --data-dir ../keirin-data     # 前受けの見込みと先行主体のライン（7車・2つのライン、JSON。docs/line-positions.md）
 YOUTUBE_API_KEY=... uv run keirin public-streams --out streams.json   # 公開版マルチビューの配信一覧（YouTube だけ）
 uv run keirin github-commit --repo-dir ../keirin-data --repo keirin-platform/keirin-data \
   --branch main --message "chore(data): ..."         # CI 用（GITHUB_TOKEN が必要）
@@ -208,7 +209,7 @@ src/keirin/
   lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）、位置のラベル、
                     府県（地区）からの並びの推定（guess_formation）
   predict.py        予想（Plackett–Luce。特徴、学習、1着・2着以内・3着以内の確率、評価、特徴の候補の比較）。docs/prediction.md
-  research.py       keirin-research の検証（ラインの連動、車番の配置と1番車の効果、追走の千切れ、ラインの位置・人数・競り・地区）。集計値だけを JSON で出す
+  research.py       keirin-research の検証（ラインの連動、車番の配置と1番車の効果、追走の千切れ、ラインの位置・人数・競り・地区、前受けの見込み）。集計値だけを JSON で出す
   notify.py         注目選手の出走通知（watchlist.toml の照合、Discord の Webhook、送信済みの記録）
   cli.py            `keirin` コマンド
   store.py          ビューア用のデータ取得（収集済みの日は CSV、それ以外は keirin.jp から。キャッシュつき）

@@ -1440,6 +1440,8 @@ FRONT_PRACTICAL = 0.03  # win excess of the leading line, front minus not (fixed
 _FRONT_RULES = {"near": predict.FRONT_NEAR, "most": 0}  # how close an S count is "the same"
 _FRONT_SUBSETS = ("all", "A", "S", "no_solo", "close", "apart")
 _FRONT_WHO = ("lead", "other", "solo")  # whose rider is expected to take the S
+_FRONT_SIZES = tuple((a, b) for a in range(2, 6) for b in range(2, 6) if a + b <= 7)
+FRONT_MIN_CELL = 30  # races on both sides for a pair of line sizes to count
 
 
 def two_line_heads(race: LineRace) -> tuple[int, int] | None:
@@ -1481,6 +1483,7 @@ def _front_columns(race: LineRace) -> dict[str, float]:
     subsets = ["all", race.group, "close" if gap <= predict.FRONT_NEAR else "apart"]
     if len(in_lead) + len(in_other) == 7:
         subsets.append("no_solo")
+    subsets.append(f"size{len(in_lead)}{len(in_other)}")  # riders of the leading / other line
     for rule, near in _FRONT_RULES.items():
         front = predict.front_rider(list(race.cars), list(race.starts), near)
         who = "lead" if front in in_lead else "other" if front in in_other else "solo"
@@ -1488,6 +1491,30 @@ def _front_columns(race: LineRace) -> dict[str, float]:
             for name, value in sums.items():
                 c[f"{rule}:{subset}:{who}:{name}"] += value
     return c
+
+
+def _front_size_adjusted(rule: str, top: tuple[str, ...], minus: str | None = None):
+    """Front minus not within each pair of line sizes (leading line, other line), weighted
+    by the races with the leading line in front; pairs short of races on a side are left out.
+    A longer line holds more often the rider expected to take the S and does better anyway."""
+
+    def stat(t) -> Any:
+        total, weight = 0.0, 0.0
+        for a, b in _FRONT_SIZES:
+            front, back = (f"{rule}:size{a}{b}:{who}:" for who in ("lead", "other"))
+            n_front, n_back = t(front + "n"), t(back + "n")
+            ok = (n_front >= FRONT_MIN_CELL) & (n_back >= FRONT_MIN_CELL)
+
+            def mean(key: str, n: Any, ok: Any = ok) -> Any:
+                value = t(*[key + name for name in top]) - (t(key + minus) if minus else 0.0)
+                return value / np.where(ok, n, 1.0)
+
+            diff = np.where(ok, mean(front, n_front) - mean(back, n_back), 0.0)
+            total = total + np.where(ok, n_front, 0.0) * diff
+            weight = weight + np.where(ok, n_front, 0.0)
+        return _ratio(total, weight)
+
+    return stat
 
 
 def front_start_summary(races: list[LineRace], *, n_boot: int = 2000, seed: int = 0) -> dict:
@@ -1542,6 +1569,25 @@ def front_start_summary(races: list[LineRace], *, n_boot: int = 2000, seed: int 
         rule: {subset: table(rule, subset) for subset in _FRONT_SUBSETS} for rule in _FRONT_RULES
     }
     count = totals._view(totals.point)
+    measures = {
+        "lead_line_win_excess": (("win",), "ewin"),
+        "lead_head_home_and_back": (("led",), None),
+        "other_line_top3_excess": (("other_top3",), "other_etop3"),
+        "other_line_shut_out": (("shut",), None),
+    }
+    sizes = {}
+    for a, b in _FRONT_SIZES:
+        front, back = (f"near:size{a}{b}:{who}:" for who in ("lead", "other"))
+        if count(front + "n") or count(back + "n"):
+            sizes[f"{a}-{b}"] = {
+                "lead_in_front": int(count(front + "n")),
+                "other_in_front": int(count(back + "n")),
+                "lead_line_win_excess": totals.value(
+                    _minus(
+                        per_race(front, "win", minus="ewin"), per_race(back, "win", minus="ewin")
+                    )
+                ),
+            }
     return {
         "races": {
             "two_lines": int(count("two_lines")),
@@ -1551,4 +1597,14 @@ def front_start_summary(races: list[LineRace], *, n_boot: int = 2000, seed: int 
         "practical": FRONT_PRACTICAL,
         "decision": tables["near"]["all"]["front_minus_not"]["lead_line_win_excess"],
         "tables": tables,
+        # added after the first look (not part of the design): the same differences with
+        # the sizes of the two lines held fixed
+        "size_adjusted": {
+            rule: {
+                name: totals.estimate(_front_size_adjusted(rule, top, minus))
+                for name, (top, minus) in measures.items()
+            }
+            for rule in _FRONT_RULES
+        },
+        "line_sizes": sizes,
     }
