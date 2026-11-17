@@ -804,6 +804,9 @@ class LineRace:
     home: int | None = None
     exacta: tuple[float, ...] = ()  # 2車単 payouts per 100 yen (several on a dead heat)
     trifecta: tuple[float, ...] = ()
+    cars: tuple[int, ...] = ()  # car numbers
+    starts: tuple[float, ...] = ()  # S counts on the race card
+    backs: tuple[float, ...] = ()  # B counts on the race card
 
 
 def load_line_races(data_dir: Path, start: date, end: date, model: predict.Model) -> list[LineRace]:
@@ -903,6 +906,9 @@ def _line_race(
         only("H"),
         tuple(payouts.get("2車単", ())),
         tuple(payouts.get("3連単", ())),
+        tuple(int(r["car_no"]) for r in riders),
+        tuple(float(r.get("start") or 0) for r in riders),
+        tuple(float(r.get("back") or 0) for r in riders),
     )
 
 
@@ -1039,8 +1045,8 @@ class _Totals:
     """Column sums over the races: the whole period, each half (split at the median race
     day) and bootstrap replicates that resample races."""
 
-    def __init__(self, races: list[LineRace], *, n_boot: int, seed: int) -> None:
-        rows = [_race_columns(r) for r in races]
+    def __init__(self, races: list[LineRace], *, n_boot: int, seed: int, columns=None) -> None:
+        rows = [(columns or _race_columns)(r) for r in races]
         self.index = {name: i for i, name in enumerate(sorted({k for row in rows for k in row}))}
         table = np.zeros((len(rows), len(self.index)))
         for i, row in enumerate(rows):
@@ -1425,4 +1431,124 @@ def line_position_summary(
             ),
         },
         "segments": segments,
+    }
+
+
+# --- the front line (前受け) and the leading line ------------------------------------------
+
+FRONT_PRACTICAL = 0.03  # win excess of the leading line, front minus not (fixed before)
+_FRONT_RULES = {"near": predict.FRONT_NEAR, "most": 0}  # how close an S count is "the same"
+_FRONT_SUBSETS = ("all", "A", "S", "no_solo", "close", "apart")
+_FRONT_WHO = ("lead", "other", "solo")  # whose rider is expected to take the S
+
+
+def two_line_heads(race: LineRace) -> tuple[int, int] | None:
+    """Heads of the two lines of a seven-rider race with exactly two lines of two or more
+    riders and no contested place (riders alone are fine); None for any other race."""
+    if len(race.pos) != 7 or any(race.fight) or not race.cars:
+        return None
+    heads = [i for i in range(7) if race.pos[i] == 1 and race.size[i] >= 2]
+    return (heads[0], heads[1]) if len(heads) == 2 else None
+
+
+def _front_columns(race: LineRace) -> dict[str, float]:
+    """Sums for the front-line check. The leading line (先行主体) is the one whose head has
+    more B on the card; `who` is the side of the rider expected to take the S."""
+    c: dict[str, float] = defaultdict(float)
+    heads = two_line_heads(race)
+    if heads is None:
+        return c
+    c["two_lines"] = 1
+    a, b = heads
+    if race.backs[a] == race.backs[b]:
+        c["tied"] = 1
+        return c
+    lead, other = (a, b) if race.backs[a] > race.backs[b] else (b, a)
+    in_lead = [i for i in range(7) if race.line[i] == race.line[lead]]
+    in_other = [i for i in range(7) if race.line[i] == race.line[other]]
+    placed = _placed(race)
+    other_top3 = float(placed[in_other, 2].sum())
+    sums = {
+        "n": 1.0,
+        "win": float(race.order[0] in in_lead),
+        "ewin": float(race.prob[in_lead, 0].sum()),
+        "led": float(race.home == lead and race.back == lead),  # led at the home and the back
+        "other_top3": other_top3,
+        "other_etop3": float(race.prob[in_other, 2].sum()),
+        "shut": float(other_top3 == 0),
+    }
+    gap = abs(max(race.starts[i] for i in in_lead) - max(race.starts[i] for i in in_other))
+    subsets = ["all", race.group, "close" if gap <= predict.FRONT_NEAR else "apart"]
+    if len(in_lead) + len(in_other) == 7:
+        subsets.append("no_solo")
+    for rule, near in _FRONT_RULES.items():
+        front = predict.front_rider(list(race.cars), list(race.starts), near)
+        who = "lead" if front in in_lead else "other" if front in in_other else "solo"
+        for subset in subsets:
+            for name, value in sums.items():
+                c[f"{rule}:{subset}:{who}:{name}"] += value
+    return c
+
+
+def front_start_summary(races: list[LineRace], *, n_boot: int = 2000, seed: int = 0) -> dict:
+    """Aggregates for docs/line-positions.md 「前受けと突っ張り先行」: how the leading line
+    does when it is expected to take the front, against when the other line is."""
+    totals = _Totals(races, n_boot=n_boot, seed=seed, columns=_front_columns)
+
+    def per_race(key: str, *names: str, minus: str | None = None):
+        def stat(t) -> Any:
+            top = t(*[key + n for n in names]) - (t(key + minus) if minus else 0.0)
+            return _ratio(top, t(key + "n"))
+
+        return stat
+
+    def table(rule: str, subset: str) -> dict[str, Any]:
+        keys = {who: f"{rule}:{subset}:{who}:" for who in _FRONT_WHO}
+        out: dict[str, Any] = {}
+        for who, key in keys.items():
+            out[who] = {
+                "races": int(totals.value(lambda t, key=key: t(key + "n")) or 0),
+                "lead_line_win": totals.value(per_race(key, "win")),
+                "expected": totals.value(per_race(key, "ewin")),
+                "excess": totals.estimate(per_race(key, "win", minus="ewin")),
+                "lead_head_home_and_back": totals.value(per_race(key, "led")),
+                "other_line_top3": totals.value(per_race(key, "other_top3")),
+                "other_line_top3_expected": totals.value(per_race(key, "other_etop3")),
+                "other_line_shut_out": totals.value(per_race(key, "shut")),
+            }
+        front, back = keys["lead"], keys["other"]
+        primary = (rule, subset) == ("near", "all")
+        out["front_minus_not"] = {
+            "lead_line_win_excess": totals.estimate(
+                _minus(per_race(front, "win", minus="ewin"), per_race(back, "win", minus="ewin")),
+                FRONT_PRACTICAL if primary else None,
+            ),
+            "lead_head_home_and_back": totals.estimate(
+                _minus(per_race(front, "led"), per_race(back, "led"))
+            ),
+            "other_line_top3_excess": totals.estimate(
+                _minus(
+                    per_race(front, "other_top3", minus="other_etop3"),
+                    per_race(back, "other_top3", minus="other_etop3"),
+                )
+            ),
+            "other_line_shut_out": totals.estimate(
+                _minus(per_race(front, "shut"), per_race(back, "shut"))
+            ),
+        }
+        return out
+
+    tables = {
+        rule: {subset: table(rule, subset) for subset in _FRONT_SUBSETS} for rule in _FRONT_RULES
+    }
+    count = totals._view(totals.point)
+    return {
+        "races": {
+            "two_lines": int(count("two_lines")),
+            "back_counts_tied": int(count("tied")),
+            "used": int(count("near:all:lead:n", "near:all:other:n", "near:all:solo:n")),
+        },
+        "practical": FRONT_PRACTICAL,
+        "decision": tables["near"]["all"]["front_minus_not"]["lead_line_win_excess"],
+        "tables": tables,
     }

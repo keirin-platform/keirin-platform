@@ -80,13 +80,17 @@ def test_feature_matrix_card_features():
          # 2nd 3rd+ solo 2nd*head 3rd*head head_size head_chaser
          0, 0, 0, 0.0, 0.0, 0, 0,
          # 2nd_size 3rd_size 4th+ contested head_contested 2nd*head_back
-         0, 0, 0, 0, 0, 0.0],
+         0, 0, 0, 0, 0, 0.0,
+         # front_line front_two front_two_lead (S counts 0 / 1 / 0: about the same, so car 1)
+         1, 0, 0],
         [0.0, 0, 0.1, 0.2, 0.3, 0, 0, 0.0, 0.0, log2, -log4, 1.0, 0,
          1, 0, 0, 3.0, 0.0, 0, 0,
-         0, 0, 0, 0, 0, log4],  # behind a head with three B
+         0, 0, 0, 0, 0, log4,  # behind a head with three B
+         1, 0, 0],
         [-3.0, 1, 0.0, 0.0, 0.0, 0, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0,
          0, 0, 1, 0.0, 0.0, 0, 0,
-         0, 0, 0, 0, 0, 0.0],
+         0, 0, 0, 0, 0, 0.0,
+         0, 0, 0],
     ]  # fmt: skip
     np.testing.assert_allclose(x, expected, atol=1e-9)
 
@@ -116,17 +120,52 @@ def test_feature_matrix_line_features():
     x = predict.feature_matrix(riders, by_car)
     lines_part = x[:, len(CARD_FEATURES) :]
     # head score (centered) is 90 - 86 = 4; then the candidate features:
-    # second_size, third_size, fourth_plus, contested, head_contested, second_x_head_back
+    # second_size, third_size, fourth_plus, contested, head_contested, second_x_head_back,
+    # front_line, front_two, front_two_lead (nobody has an S: car 1's line takes the front)
     np.testing.assert_allclose(
         lines_part,
         [
-            [0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0],  # head of a 4-rider line, a chaser
-            [1, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0],
-            [0, 1, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0],  # head of four, a chaser
+            [1, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 1, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+            [0, 1, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         ],
     )
+
+
+def test_front_rider_is_the_innermost_car_among_the_most_frequent_starters():
+    assert predict.front_rider([1, 2, 3], [0, 5, 4]) == 1  # cars 2 and 3 are close: car 2
+    assert predict.front_rider([1, 2, 3], [3, 5, 4]) == 0  # all within two: car 1
+    assert predict.front_rider([1, 2, 3], [3, 5, 4], near=0) == 1  # the most S only
+    assert predict.front_rider([1, 2, 3], [5, 5, 1], near=0) == 0  # a tie: the inner car
+    assert predict.front_rider([7, 1, 3], [5, 4, 0]) == 1  # by car number, not by row
+    assert predict.front_rider([], []) is None
+
+
+def front_columns(starts: dict[int, int], backs: dict[int, int]) -> np.ndarray:
+    """123/456 and car 7 alone -> the front_line, front_two and front_two_lead columns."""
+    riders = [
+        card(c, score=90.0 - c, start=starts.get(c, 0), back=backs.get(c, 0)) for c in range(1, 8)
+    ]
+    by_car = predict.close_gaps(
+        {c: {"line_no": 1 + (c > 3), "line_pos": c - 3 * (c > 3)} for c in range(1, 7)}, set()
+    )
+    x = predict.feature_matrix(riders, by_car)
+    return x[:, [COL["front_line"], COL["front_two"], COL["front_two_lead"]]]
+
+
+def test_feature_matrix_marks_the_line_expected_to_take_the_front():
+    # car 5 has by far the most S: its line (4, 5, 6) takes the front; its head has more B
+    front = front_columns({5: 9}, {4: 5, 1: 1})
+    np.testing.assert_allclose(front[3:6], [[1, 1, 1]] * 3)
+    np.testing.assert_allclose(front[[0, 1, 2, 6]], 0)
+    # the same line in front, but the other line's head is the one who leads
+    np.testing.assert_allclose(front_columns({5: 9}, {4: 1, 1: 5})[3:6], [[1, 1, 0]] * 3)
+    # S counts about the same: the inner car's line
+    np.testing.assert_allclose(front_columns({5: 2}, {4: 5, 1: 1})[:3], [[1, 1, 0]] * 3)
+    # a rider alone is expected to take the front: no line gets it
+    np.testing.assert_allclose(front_columns({7: 9}, {4: 5, 1: 1}), 0)
 
 
 def test_feature_matrix_marks_a_contested_place():
@@ -280,15 +319,17 @@ def test_fit_leaves_the_candidate_features_out_unless_asked():
 def test_variants_are_the_base_and_every_combination_of_candidates():
     v = predict.variants()
     assert list(v) == [
-        "now", "size", "contest", "lead",
-        "size+contest", "size+lead", "contest+lead", "size+contest+lead",
+        "now", "size", "contest", "lead", "start",
+        "size+contest", "size+lead", "size+start", "contest+lead", "contest+start", "lead+start",
+        "size+contest+lead", "size+contest+start", "size+lead+start", "contest+lead+start",
+        "size+contest+lead+start",
     ]  # fmt: skip
     assert v["now"] == predict.BASE_FEATURES == predict.DEFAULT_FEATURES
     assert "second_size" not in v["now"] and "second" in v["now"]
     assert set(v["size+lead"]) - set(v["now"]) == {
         "second_size", "third_size", "fourth_plus", "second_x_head_back",
     }  # fmt: skip
-    assert set(v["size+contest+lead"]) == set(FEATURES)
+    assert set(v["size+contest+lead+start"]) == set(FEATURES)
 
 
 # --- training data from the tables -----------------------------------------------------
@@ -538,6 +579,14 @@ def test_walk_forward_fits_on_the_days_before_each_block(monkeypatch):
         np.testing.assert_allclose(s.probs["now"].sum(axis=0), [1.0, 2.0, 3.0])
 
 
+def test_fit_starts_from_another_model():
+    races = simulate(params(b_score=1.0, g1_second_size=1.0), races=600, field=7)
+    base = predict.fit(races)
+    cold = predict.fit(races, columns=predict.variants()["size"])
+    warm = predict.fit(races, columns=predict.variants()["size"], init=base)
+    np.testing.assert_allclose(warm.params["A"], cold.params["A"], atol=0.02)
+
+
 def test_walk_forward_leaves_out_a_group_without_a_model():
     first = date(2026, 9, 1)
     races = dated(simulate(params(b_score=1.0), races=200, field=5), first, per_day=10)
@@ -635,8 +684,8 @@ def test_predict_compare_command(tmp_path, capsys):
     assert code == 0
     assert result["period"] == {"from": "2026-09-11", "to": "2026-09-20"}
     assert result["races"]["men"] == 30 and result["races"]["A"] == 30
-    assert set(result["decisions"]) == {"size", "contest", "lead"}
-    assert len(result["variants"]["men"]) == 8
+    assert set(result["decisions"]) == {"size", "contest", "lead", "start"}
+    assert len(result["variants"]["men"]) == 16
     assert "テスト" not in out and "racer" not in out  # aggregates only
 
 
