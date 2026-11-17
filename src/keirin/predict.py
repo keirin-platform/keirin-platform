@@ -13,11 +13,15 @@ S級, A級 and L級 (girls) are fitted separately. Training uses a race's captur
 formation (tables/lines) when there is one, and otherwise guesses it from the
 riders' regions (`lines.guess_formation`). Girls' keirin has no lines: every
 rider of an L級 race rides alone.
+
+A fit uses DEFAULT_FEATURES. The other line features are candidates that
+`walk_forward` and `compare` score against it on later days (`keirin predict-compare`).
 """
 
 from __future__ import annotations
 
 import csv
+import itertools
 import logging
 import math
 import unicodedata
@@ -59,6 +63,13 @@ LINE_FEATURES = (
     "third_x_head",
     "head_size",  # leader x (line size - 2)
     "head_chaser",  # leader whose style is 追
+    # candidates (docs/prediction.md, 2026-11-17): a fit leaves them out unless asked
+    "second_size",  # 番手 x (line size - 2)
+    "third_size",  # 3番手 x (line size - 3)
+    "fourth_plus",  # 4番手 or further back (on top of third_plus)
+    "contested",  # shares the place with another rider (競り)
+    "head_contested",  # leader of a line with a contested place behind
+    "second_x_head_back",  # 番手 x log1p(the leader's B count)
 )
 FEATURES = CARD_FEATURES + LINE_FEATURES
 KC, KL = len(CARD_FEATURES), len(LINE_FEATURES)
@@ -67,6 +78,14 @@ N_PARAMS = K + KL + 2  # beta, gamma1, gamma23, log t2, log t3
 MIN_RACES = 100
 L2 = 1e-3
 TRAINING_DAYS = 120  # the viewer fits on the latest collected days only (fit time)
+
+CANDIDATES = {  # groups of line features a comparison adds to the base model
+    "size": ("second_size", "third_size", "fourth_plus"),
+    "contest": ("contested", "head_contested"),
+    "lead": ("second_x_head_back",),
+}
+BASE_FEATURES = tuple(f for f in FEATURES if not any(f in group for group in CANDIDATES.values()))
+DEFAULT_FEATURES = BASE_FEATURES  # what `fit` uses (the viewer's model)
 
 
 def group_of(race_class: str | None) -> str | None:
@@ -96,7 +115,7 @@ def feature_matrix(riders: list[dict[str, Any]], by_car: dict[int, dict[str, Any
     """One row per rider (card features, then line features).
 
     `riders` are race card rows (numbers or CSV strings); `by_car` maps a car number to
-    its line_no / line_pos / line_size. Riders missing from it count as 単騎.
+    its line_no / line_pos / line_size (and contested). Riders missing from it count as 単騎.
     """
     col = {name: i for i, name in enumerate(FEATURES)}
     x = np.zeros((len(riders), K))
@@ -130,25 +149,41 @@ def feature_matrix(riders: list[dict[str, Any]], by_car: dict[int, dict[str, Any
 
     lines = [by_car.get(int(r["car_no"])) for r in riders]
     head_score: dict[int, float] = {}
+    head_back: dict[int, float] = {}
+    fought: set[int] = set()  # lines with a contested place
     for i, info in enumerate(lines):
-        if info and int(info["line_pos"]) == 1 and int(info["line_size"]) >= 2:
-            line_no = int(info["line_no"])
+        if not info or int(info["line_size"]) < 2:
+            continue
+        line_no = int(info["line_no"])
+        if info.get("contested"):
+            fought.add(line_no)
+        if int(info["line_pos"]) == 1:
             head_score[line_no] = max(head_score.get(line_no, -math.inf), centered[i])
+            head_back[line_no] = max(head_back.get(line_no, 0.0), x[i, col["back"]])
     for i, info in enumerate(lines):
         size = int(info["line_size"]) if info else 1
         if size == 1:
             x[i, col["solo"]] = 1
             continue
-        pos, head = int(info["line_pos"]), head_score.get(int(info["line_no"]), 0.0)
+        line_no, pos = int(info["line_no"]), int(info["line_pos"])
+        head = head_score.get(line_no, 0.0)
+        x[i, col["contested"]] = bool(info.get("contested"))
         if pos == 1:
             x[i, col["head_size"]] = size - 2
             x[i, col["head_chaser"]] = riders[i].get("style") == "追"
+            x[i, col["head_contested"]] = line_no in fought and not info.get("contested")
         elif pos == 2:
             x[i, col["second"]] = 1
             x[i, col["second_x_head"]] = head
+            x[i, col["second_size"]] = size - 2
+            x[i, col["second_x_head_back"]] = head_back.get(line_no, 0.0)
         else:
             x[i, col["third_plus"]] = 1
             x[i, col["third_x_head"]] = head
+            if pos == 3:
+                x[i, col["third_size"]] = size - 3
+            else:
+                x[i, col["fourth_plus"]] = 1
     return x
 
 
@@ -272,6 +307,34 @@ def race_probabilities(theta: np.ndarray, x: np.ndarray) -> np.ndarray:
     return np.column_stack([p1, np.minimum(top2, 1.0), np.minimum(top3, 1.0)])
 
 
+def top3_order_probabilities(theta: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """(n, n, n): probability that riders a, b and c finish 1st, 2nd and 3rd.
+
+    The model of `race_probabilities` as one array (three or more riders).
+    """
+    u1, u23, (t2, t3) = utilities(theta, x)
+    n = len(x)
+    off = ~np.eye(n, dtype=bool)
+    p1 = np.exp(u1 - logsumexp(u1))
+    e2 = np.exp(t2 * u23 - (t2 * u23).max())
+    e3 = np.exp(t3 * u23 - (t3 * u23).max())
+    p2 = np.where(off, e2[None, :], 0.0)
+    p2 /= p2.sum(axis=1, keepdims=True)  # (a, b): b is second once a has won
+    free = off[:, :, None] & off[:, None, :] & off[None, :, :]  # a, b and c all differ
+    p3 = np.where(free, e3[None, None, :], 0.0)
+    left = p3.sum(axis=2, keepdims=True)
+    p3 = np.divide(p3, left, out=np.zeros_like(p3), where=left > 0)
+    return p1[:, None, None] * p2[:, :, None] * p3
+
+
+def expected_places(theta: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(n, 3) win / top 2 / top 3 and (n, n) both in the top 3, under the model."""
+    t = top3_order_probabilities(theta, x)
+    first, second, third = t.sum(axis=(1, 2)), t.sum(axis=(0, 2)), t.sum(axis=(0, 1))
+    m = t.sum(axis=2) + t.sum(axis=1) + t.sum(axis=0)
+    return np.column_stack([first, first + second, first + second + third]), m + m.T
+
+
 @dataclass(frozen=True)
 class Race:
     group: str
@@ -292,7 +355,7 @@ class Model:
         return None if theta is None else race_probabilities(theta, x)
 
 
-def _pack(races: list[Race], keep: np.ndarray | None):
+def _pack(races: list[Race], keep: np.ndarray):
     width = max(len(r.x) for r in races)
     x = np.zeros((len(races), width, K))
     mask = np.zeros((len(races), width), bool)
@@ -301,8 +364,7 @@ def _pack(races: list[Race], keep: np.ndarray | None):
         x[i, : len(r.x)] = r.x
         mask[i, : len(r.x)] = True
         order[i, : len(r.order[:3])] = r.order[:3]
-    if keep is not None:
-        x[..., ~keep] = 0.0
+    x[..., ~keep] = 0.0
     return x, mask, order
 
 
@@ -316,9 +378,9 @@ def fit(
     """Maximum likelihood per group (groups with fewer than `min_races` are left out).
 
     `columns` restricts the model to those features (the others get a weight of 0),
-    e.g. ("score", "no_score") for a score-only baseline.
+    e.g. ("score", "no_score") for a score-only baseline. The default is DEFAULT_FEATURES.
     """
-    keep = None if columns is None else np.array([f in columns for f in FEATURES])
+    keep = np.array([f in (DEFAULT_FEATURES if columns is None else columns) for f in FEATURES])
     groups: dict[str, list[Race]] = defaultdict(list)
     for race in races:
         groups[race.group].append(race)
@@ -333,10 +395,9 @@ def fit(
         if not result.success:
             log.warning("%s: the fit did not converge (%s)", group, result.message)
         theta = result.x
-        if keep is not None:
-            theta[:KC][~keep[:KC]] = 0.0
-            theta[KC:K][~keep[KC:]] = 0.0
-            theta[K : K + KL][~keep[KC:]] = 0.0
+        theta[:KC][~keep[:KC]] = 0.0
+        theta[KC:K][~keep[KC:]] = 0.0
+        theta[K : K + KL][~keep[KC:]] = 0.0
         params[group], counts[group] = theta, len(members)
     days = [r.day for r in races if r.day is not None]
     return Model(params, counts, min(days, default=None), max(days, default=None))
@@ -376,7 +437,7 @@ def load_races(data_dir: Path, start: date | None = None, end: date | None = Non
                 "line_no": int(r["line_no"]),
                 "line_pos": int(r["line_pos"]),
                 "line_size": int(r["line_size"]),
-            }
+            }  # close_gaps works out the contests from the shared places
         races: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
         for r in read_rows(path):
             races[(r["venue_code"], r["race_no"])].append(r)
@@ -476,6 +537,275 @@ def evaluate(model: Model, races: list[Race]) -> dict[str, Evaluation]:
             top3_bins=_bins(p3, y3, TOP3_EDGES),
         )
     return result
+
+
+# --- comparing feature sets on later days ----------------------------------------------
+
+PRACTICAL_LOG_LOSS = 0.002  # per race; fixed before measuring (docs/prediction.md)
+SEGMENTS = ("men", "A", "S", "S7", "S9", "contested")
+
+
+def variants(candidates: dict[str, tuple[str, ...]] | None = None) -> dict[str, tuple[str, ...]]:
+    """The base model ("now") and every combination of candidate groups added to it."""
+    candidates = CANDIDATES if candidates is None else candidates
+    out = {"now": BASE_FEATURES}
+    for r in range(1, len(candidates) + 1):
+        for combo in itertools.combinations(candidates, r):
+            out["+".join(combo)] = BASE_FEATURES + tuple(f for g in combo for f in candidates[g])
+    return out
+
+
+def cells_of(x: np.ndarray) -> list[str]:
+    """Each rider's place in the line, read back from the feature matrix: head / second /
+    third with the line size (4: four or more), fourth_plus, solo, contested (the riders
+    who share a place) and head_contested (the head they fight behind)."""
+    col = {name: i for i, name in enumerate(FEATURES)}
+
+    def sized(row: np.ndarray, name: str, column: str, least: int) -> str:
+        return f"{name}_{min(int(round(row[col[column]])) + least, 4)}"
+
+    out = []
+    for row in x:
+        if row[col["contested"]] > 0.5:
+            out.append("contested")
+        elif row[col["solo"]] > 0.5:
+            out.append("solo")
+        elif row[col["head_contested"]] > 0.5:
+            out.append("head_contested")
+        elif row[col["fourth_plus"]] > 0.5:
+            out.append("fourth_plus")
+        elif row[col["third_plus"]] > 0.5:
+            out.append(sized(row, "third", "third_size", 3))
+        elif row[col["second"]] > 0.5:
+            out.append(sized(row, "second", "second_size", 2))
+        else:
+            out.append(sized(row, "head", "head_size", 2))
+    return out
+
+
+@dataclass(frozen=True)
+class Scored:
+    """A race predicted by every variant, each fitted on earlier days only."""
+
+    race: Race
+    probs: dict[str, np.ndarray]  # variant -> (riders, 3): win, top 2, top 3
+
+
+def walk_forward(
+    races: list[Race],
+    start: date,
+    end: date,
+    *,
+    columns: dict[str, tuple[str, ...]],
+    days: int = TRAINING_DAYS,
+    step: int = 14,
+    groups: tuple[str, ...] = ("A", "S"),
+    min_races: int = MIN_RACES,
+) -> list[Scored]:
+    """Predicts the races of start <= day < end in blocks of `step` days; every block uses
+    models fitted on the `days` days before it. Races of a group some variant has no model
+    for are left out."""
+    dated = [r for r in races if r.day is not None and r.group in groups]
+    out = []
+    block = start
+    while block < end:
+        following = min(block + timedelta(days=step), end)
+        train = [r for r in dated if block - timedelta(days=days) <= r.day < block]
+        models = {name: fit(train, min_races=min_races, columns=c) for name, c in columns.items()}
+        for race in dated:
+            if block <= race.day < following and all(
+                race.group in m.params for m in models.values()
+            ):
+                probs = {
+                    n: expected_places(m.params[race.group], race.x)[0] for n, m in models.items()
+                }
+                out.append(Scored(race, probs))
+        block = following
+    return out
+
+
+def _race_scores(scored: Scored, names: list[str]) -> list[float]:
+    """Per variant: -log P(winner) and the squared errors of win / top 2 / top 3 summed
+    over the riders; then the number of riders."""
+    n = len(scored.race.x)
+    hit = np.zeros((n, 3))
+    hit[scored.race.order[0], 0] = 1
+    hit[list(scored.race.order[:2]), 1] = 1
+    hit[list(scored.race.order[:3]), 2] = 1
+    row = []
+    for name in names:
+        p = scored.probs[name]
+        row.append(-math.log(max(p[scored.race.order[0], 0], 1e-12)))
+        row.extend(((p - hit) ** 2).sum(axis=0))
+    return [*row, float(n)]
+
+
+def _measures(totals: np.ndarray, races: Any, names: list[str]) -> dict[str, dict[str, Any]]:
+    """variant -> log_loss / brier_win / brier_top2 / brier_top3 from column sums."""
+    riders = totals[..., -1]
+    out = {}
+    for k, name in enumerate(names):
+        out[name] = {"log_loss": totals[..., 4 * k] / races} | {
+            f"brier_{place}": totals[..., 4 * k + 1 + j] / riders
+            for j, place in enumerate(("win", "top2", "top3"))
+        }
+    return out
+
+
+def decide_feature(
+    value: float,
+    ci: tuple[float, float],
+    halves: tuple[float, float],
+    by_group: tuple[float, ...],
+    practical: float = PRACTICAL_LOG_LOSS,
+) -> str:
+    """入れる / 入れない / 保留 for a change of the win log loss (negative: better).
+
+    入れない first when the interval lies inside +-practical (negligible) or above 0
+    (worse). 入れる needs an interval below 0, a point estimate of at least `practical`,
+    both halves better and no group worse.
+    """
+    lo, hi = ci
+    if (-practical < lo and hi < practical) or lo > 0:
+        return "入れない"
+    better = hi < 0 and value <= -practical
+    if better and all(h < 0 for h in halves) and all(g <= 0 for g in by_group):
+        return "入れる"
+    return "保留"
+
+
+def compare(
+    scored: list[Scored], *, base: str = "now", n_boot: int = 2000, seed: int = 0
+) -> dict[str, Any]:
+    """How the variants score the same races, against `base` (aggregates only).
+
+    Intervals resample races (paired across variants); the halves split at the median
+    race day. A candidate group is judged by `decide_feature` on the men's win log loss
+    of base + that group alone; "adopted" is the variant made of the groups to add.
+    """
+    names = list(scored[0].probs)
+    table = np.array([_race_scores(s, names) for s in scored])
+    days = np.array([s.race.day.toordinal() for s in scored])
+    group = np.array([s.race.group for s in scored])
+    field = np.array([len(s.race.x) for s in scored])
+    cells = [cells_of(s.race.x) for s in scored]
+    masks = {
+        "men": np.ones(len(scored), bool),
+        "A": group == "A",
+        "S": group == "S",
+        "S7": (group == "S") & (field == 7),
+        "S9": (group == "S") & (field == 9),
+        "contested": np.array(["contested" in c for c in cells]),
+    }
+    rng = np.random.default_rng(seed)
+
+    def differences(rows: np.ndarray) -> dict[str, dict[str, dict[str, Any]]]:
+        """variant -> measure -> change against base (value, ci95, halves)."""
+        part, n = table[rows], int(rows.sum())
+        if n == 0:
+            return {}
+        early = days[rows] <= np.median(days[rows])
+        whole = _measures(part.sum(axis=0), n, names)
+        halves = [
+            _measures(part[half].sum(axis=0), int(half.sum()), names) if half.any() else None
+            for half in (early, ~early)
+        ]
+        boots = []
+        for _ in range(0, n_boot, 250):  # in chunks: the weights are (replicates, races)
+            w = rng.multinomial(n, np.full(n, 1 / n), size=min(250, n_boot))
+            boots.append(w @ part)
+        boot = _measures(np.concatenate(boots)[:n_boot], n, names) if n_boot else None
+        out = {}
+        for name in names:
+            out[name] = {}
+            for measure in whole[name]:
+                entry: dict[str, Any] = {
+                    "value": round(float(whole[name][measure]), 5),
+                    "change": round(float(whole[name][measure] - whole[base][measure]), 5),
+                }
+                if name != base:
+                    if boot is not None:
+                        diff = boot[name][measure] - boot[base][measure]
+                        entry["ci95"] = [
+                            round(float(q), 5) for q in np.quantile(diff, [0.025, 0.975])
+                        ]
+                    entry["halves"] = [
+                        None if h is None else round(float(h[name][measure] - h[base][measure]), 5)
+                        for h in halves
+                    ]
+                out[name][measure] = entry
+        return out
+
+    by_segment = {segment: differences(mask) for segment, mask in masks.items()}
+    decisions, adopted = {}, []
+    for candidate in CANDIDATES:
+        if candidate not in names:
+            continue
+        men = by_segment["men"][candidate]["log_loss"]
+        by_group = tuple(
+            by_segment[g][candidate]["log_loss"]["change"] for g in ("A", "S") if by_segment[g]
+        )
+        halves = tuple(h for h in men["halves"] if h is not None)
+        verdict = (
+            decide_feature(men["change"], tuple(men["ci95"]), halves, by_group)
+            if "ci95" in men and len(halves) == 2
+            else "保留"
+        )
+        decisions[candidate] = {
+            "change": men["change"],
+            "ci95": men.get("ci95"),
+            "halves": men["halves"],
+            "by_group": dict(zip(("A", "S"), by_group, strict=False)),
+            "decision": verdict,
+        }
+        if verdict == "入れる":
+            adopted.append(candidate)
+    adopted_name = "+".join(adopted) if adopted else base
+
+    def residuals(name: str, rows: np.ndarray) -> dict[str, dict[str, Any]]:
+        """cell -> riders and the mean of (happened - predicted) for the win and the top 3."""
+        sums: dict[str, np.ndarray] = defaultdict(lambda: np.zeros(3))
+        for i in np.flatnonzero(rows):
+            s = scored[i]
+            p = s.probs[name]
+            for k, cell in enumerate(cells[i]):
+                won, top3 = k == s.race.order[0], k in s.race.order[:3]
+                sums[cell] += (1.0, won - p[k, 0], top3 - p[k, 2])
+        return {
+            cell: {
+                "riders": int(v[0]),
+                "win": round(float(v[1] / v[0]), 4),
+                "top3": round(float(v[2] / v[0]), 4),
+            }
+            for cell, v in sorted(sums.items())
+        }
+
+    def calibration(name: str) -> dict[str, list[dict[str, Any]]]:
+        p1 = np.concatenate([s.probs[name][:, 0] for s in scored])
+        p3 = np.concatenate([s.probs[name][:, 2] for s in scored])
+        y1 = np.concatenate([np.arange(len(s.race.x)) == s.race.order[0] for s in scored])
+        y3 = np.concatenate([np.isin(np.arange(len(s.race.x)), s.race.order[:3]) for s in scored])
+        return {
+            place: [
+                {"from": b.lo, "to": b.hi, "riders": b.n,
+                 "predicted": round(b.predicted, 4), "observed": round(b.observed, 4)}
+                for b in _bins(p, y.astype(float), edges)
+            ]
+            for place, p, y, edges in (("win", p1, y1, WIN_EDGES), ("top3", p3, y3, TOP3_EDGES))
+        }  # fmt: skip
+
+    shown = list(dict.fromkeys([base, adopted_name, names[-1]]))  # base, adopted, everything
+    return {
+        "races": {segment: int(mask.sum()) for segment, mask in masks.items()},
+        "practical": PRACTICAL_LOG_LOSS,
+        "decisions": decisions,
+        "adopted": adopted_name,
+        "variants": by_segment,
+        "residuals": {
+            name: {g: residuals(name, masks[g]) for g in ("men", "A", "S")} for name in shown
+        },
+        "calibration": {name: calibration(name) for name in shown},
+    }
 
 
 # --- predicting a race card ------------------------------------------------------------

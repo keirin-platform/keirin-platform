@@ -550,10 +550,10 @@ def test_order_probabilities_match_the_prediction_model():
     theta = rng.normal(scale=0.3, size=N_PARAMS)
     for n in (3, 7, 9):
         x = rng.normal(size=(n, K))
-        orders = research.top3_order_probabilities(theta, x)
+        orders = predict.top3_order_probabilities(theta, x)
         assert orders.sum() == pytest.approx(1.0)
         assert orders[0, 0].sum() == 0.0 and orders[1, :, 1].sum() == 0.0  # no rider twice
-        prob, pairs = research.expected_places(theta, x)
+        prob, pairs = predict.expected_places(theta, x)
         assert np.allclose(prob, predict.race_probabilities(theta, x), atol=1e-9)
         assert np.allclose(pairs, research.pair_top3_probabilities(theta, x), atol=1e-9)
 

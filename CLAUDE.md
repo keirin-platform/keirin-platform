@@ -183,6 +183,7 @@ uv run keirin estimate-deltas --boundary 2026-07-01 --data-dir ../keirin-data   
 uv run keirin rating --as-of 2026-11-01 --top 20 --data-dir ../keirin-data              # レーティング上位
 uv run keirin evaluate --date 2026-09-01 --to 2026-09-30 --rating --data-dir ../keirin-data  # レーティングも評価
 uv run keirin predict-eval --date 2026-09-28 --to 2026-10-04 --data-dir ../keirin-data   # 予想の評価（前日までで学習）
+uv run keirin predict-compare --date 2025-12-22 --to 2026-11-15 --data-dir ../keirin-data  # 予想の特徴の候補を今のモデルと比べる（14日ごとに学習し直す、JSON。docs/prediction.md）
 uv run keirin line-linkage --date 2026-10-05 --to 2026-10-30 --data-dir ../keirin-data   # ラインの連動の検証（keirin-research の LAW-001、JSON）
 uv run keirin car-order --date 2025-08-24 --to 2026-10-30 --data-dir ../keirin-data      # 車番の配置と1番車の効果（keirin-research の RULE-004・005、CAND-031、JSON）
 uv run keirin line-positions --date 2025-08-24 --to 2026-11-15 --days 224 --data-dir ../keirin-data  # ラインの位置・人数・競り・地区の検証（keirin-research の CAND-002〜009、JSON。docs/line-positions.md）
@@ -206,7 +207,7 @@ src/keirin/
   hatena.py         keirin-blog の記事をはてなブログに同期（AtomPub、Fotolife、状態ファイル）
   lines.py          ライン（並び）の取得と解析（keirin.jp の nInfo、オッズパークの並び、raw の統合、lines テーブル）、位置のラベル、
                     府県（地区）からの並びの推定（guess_formation）
-  predict.py        予想（Plackett–Luce。特徴、学習、1着・2着以内・3着以内の確率、評価）。docs/prediction.md
+  predict.py        予想（Plackett–Luce。特徴、学習、1着・2着以内・3着以内の確率、評価、特徴の候補の比較）。docs/prediction.md
   research.py       keirin-research の検証（ラインの連動、車番の配置と1番車の効果、追走の千切れ、ラインの位置・人数・競り・地区）。集計値だけを JSON で出す
   notify.py         注目選手の出走通知（watchlist.toml の照合、Discord の Webhook、送信済みの記録）
   cli.py            `keirin` コマンド
@@ -269,6 +270,9 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
   - 得点をそろえた比較は「同じ得点での着順の出方の違い」を測る（得点に位置の慣れが入っているため）。同じ選手では番手のほうが1着 +9.5 ポイントだが、付く相手がいるときに番手を回るので大きめに出る。
   - 番手がバックを取る形（番手捲りの代わり）は 0.7% と少なく、決勝に偏る（決勝 5.5%、決勝以外 0.4%）。ラインの連動（LAW-001）は全期間でも +0.508 組／レース。
   - keirin-research には LAW-004（3番手と単騎）、LAW-005（番手と先頭は級班で逆）、LAW-006（ラインの長さ）、LAW-007（競り、否定）、LAW-008（地区、否定）、LAW-009（バックを取ったライン、否定）として登録した（オーナーが下書きを承認）。
+- 2026-11-17 **ラインの検証の結果を予想に入れて確かめることにした**（オーナーの依頼）。足す特徴の候補は3組: 人数（番手×人数、3番手×人数、4番手以降）、競り（競りの選手、競られたラインの先頭）、先行の番手（番手×先頭の B の回数）。
+  級班ごとの番手の効き方は、S級・A級を別々に学習しているので今のモデルにもう入っている。基準（1着の対数損失で 0.002、区間、前半と後半、A級・S級とも悪化しない）は評価の前に [docs/prediction.md](docs/prediction.md) に書いた。
+  候補は `keirin predict-compare`（14 日ごとに学習し直す）で今のモデルと比べる。入れると決まるまで、ビューアの既定の特徴は変えない。特徴は評価と同じ期間の表を見て選んだので評価はやや甘く、2026-11-16 以降のデータで確かめ直す。
 - 2026-10-04 1回あたりの収集日数を10日から15日に増やした（オーナー判断）。JSJ002 で1日のリクエストが減ったので、1回あたりのアクセス量は以前と同じくらい。backfill は11月上旬から10/24ごろに前倒し。
 - 2026-10-04 出走表の取得を JSJ002（開催ごとに1回）に切り替えた（オーナー承認）。サイトへのアクセスが約4割減る。GitHub 調査で知り、自分たちで確かめた。
   並び（ライン）の収集は、ほかの投票サイトからも取れるので急がない（オーナー判断）。
@@ -390,7 +394,7 @@ infra/blog-repo/    ブログリポジトリ（keirin-blog）に置くファイ�
 - [x] keirin-research への登録（2026-11-17、オーナーが下書きを承認。keirin-research#4）。LAW-004〜009 を登録し、LAW-001 を全期間の値に更新、CAND-002〜004・006〜009 を候補から消し、CAND-005 は試算を足して残した。DATA-KD-002・003 と SRC-OP-001 の古い記述も直した
 - [ ] keirin-research: laws.md が約 26,000 バイトで、上限（30,000 バイト）まであと1件ほど。次に法則を足す前に、上限を上げるかファイルを分けるかを決める
 - [ ] ラインの検証の確かめ直し: 2026-11-16 以降のデータがたまったら（期替わりのあとの 2027-01 下旬が目安）、`keirin line-positions` を同じ基準で回す。とくに「S級は番手、A級は先頭」（層別で見つけた）を確かめる
-- [ ] 予想への反映の検討: ラインの人数（3人以上の先頭・番手が見込みを上回り、2人のラインの番手と単騎が下回る）と、級班ごとの番手の効き方を特徴に入れて、`predict-eval` で確かめる
+- [ ] 予想への反映（docs/prediction.md の 2026-11-17 の節）: 特徴の候補（人数、競り、先行の番手）と比較のコード（`keirin predict-compare`）は入れた。設計メモをオーナーが見たあと、実データで回して結果を docs に残し、入れると決まった組をビューアの既定にする（データリポジトリの requirements.txt の SHA も更新する）
 - [ ] keirin-research: 2026-11-05 以降のデータで、LAW-002・LAW-003 を確かめ直す。CAND-037（追走力の個人差）は 2027-04 ごろ
 - [ ] keirin-research: 評価（`claude plugin eval`、T1〜T8）を回す（API キーを用意したとき）
 - [ ] 検討: このリポジトリに AGENTS.md を作り、Codex からも keirin-research を指す

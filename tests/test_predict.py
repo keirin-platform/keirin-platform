@@ -1,6 +1,6 @@
 import csv
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pytest
@@ -78,11 +78,15 @@ def test_feature_matrix_card_features():
         # score no  win  top2 top3 逃 両 back  home  start attack age  prevS
         [3.0, 0, 0.2, 0.4, 0.5, 1, 0, log4, log2, 0.0, log4, -1.0, 1,
          # 2nd 3rd+ solo 2nd*head 3rd*head head_size head_chaser
-         0, 0, 0, 0.0, 0.0, 0, 0],
+         0, 0, 0, 0.0, 0.0, 0, 0,
+         # 2nd_size 3rd_size 4th+ contested head_contested 2nd*head_back
+         0, 0, 0, 0, 0, 0.0],
         [0.0, 0, 0.1, 0.2, 0.3, 0, 0, 0.0, 0.0, log2, -log4, 1.0, 0,
-         1, 0, 0, 3.0, 0.0, 0, 0],
+         1, 0, 0, 3.0, 0.0, 0, 0,
+         0, 0, 0, 0, 0, log4],  # behind a head with three B
         [-3.0, 1, 0.0, 0.0, 0.0, 0, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0,
-         0, 0, 1, 0.0, 0.0, 0, 0],
+         0, 0, 1, 0.0, 0.0, 0, 0,
+         0, 0, 0, 0, 0, 0.0],
     ]  # fmt: skip
     np.testing.assert_allclose(x, expected, atol=1e-9)
 
@@ -111,17 +115,57 @@ def test_feature_matrix_line_features():
     by_car = {c: {"line_no": 1, "line_pos": c, "line_size": 4} for c in (1, 2, 3, 4)}
     x = predict.feature_matrix(riders, by_car)
     lines_part = x[:, len(CARD_FEATURES) :]
-    # head score (centered) is 90 - 86 = 4
+    # head score (centered) is 90 - 86 = 4; then the candidate features:
+    # second_size, third_size, fourth_plus, contested, head_contested, second_x_head_back
     np.testing.assert_allclose(
         lines_part,
         [
-            [0, 0, 0, 0, 0, 2, 1],  # head of a 4-rider line, a chaser
-            [1, 0, 0, 4, 0, 0, 0],
-            [0, 1, 0, 0, 4, 0, 0],
-            [0, 1, 0, 0, 4, 0, 0],
-            [0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0],  # head of a 4-rider line, a chaser
+            [1, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 1, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         ],
     )
+
+
+def test_feature_matrix_marks_a_contested_place():
+    # 1(23)4 / 5: cars 2 and 3 fight for the place behind car 1
+    riders = [card(c, score=90.0 - c, back=2 if c == 1 else 0) for c in (1, 2, 3, 4, 5)]
+    by_car = predict.close_gaps(
+        {
+            1: {"line_no": 1, "line_pos": 1},
+            2: {"line_no": 1, "line_pos": 2},
+            3: {"line_no": 1, "line_pos": 2},
+            4: {"line_no": 1, "line_pos": 3},
+            5: {"line_no": 2, "line_pos": 1},
+        },
+        set(),
+    )
+    x = predict.feature_matrix(riders, by_car)
+    np.testing.assert_allclose(x[:, COL["contested"]], [0, 1, 1, 0, 0])
+    np.testing.assert_allclose(x[:, COL["head_contested"]], [1, 0, 0, 0, 0])
+    np.testing.assert_allclose(x[:, COL["second_size"]], [0, 2, 2, 0, 0])  # a line of four
+    np.testing.assert_allclose(x[:, COL["third_size"]], [0, 0, 0, 1, 0])
+    np.testing.assert_allclose(x[:, COL["second_x_head_back"]], [0, math.log(3), math.log(3), 0, 0])
+    assert predict.cells_of(x) == ["head_contested", "contested", "contested", "third_4", "solo"]
+
+
+def test_cells_of_names_the_place_and_the_line_size():
+    riders = [card(c, score=90.0 - c) for c in range(1, 10)]
+    by_car = predict.close_gaps(
+        {
+            1: {"line_no": 1, "line_pos": 1}, 2: {"line_no": 1, "line_pos": 2},
+            3: {"line_no": 2, "line_pos": 1}, 4: {"line_no": 2, "line_pos": 2},
+            5: {"line_no": 2, "line_pos": 3}, 6: {"line_no": 2, "line_pos": 4},
+            7: {"line_no": 2, "line_pos": 5}, 8: {"line_no": 3, "line_pos": 1},
+        },
+        set(),
+    )  # fmt: skip
+    assert predict.cells_of(predict.feature_matrix(riders, by_car)) == [
+        "head_2", "second_2", "head_4", "second_4", "third_4", "fourth_plus", "fourth_plus",
+        "solo", "solo",
+    ]  # fmt: skip
 
 
 # --- probabilities ---------------------------------------------------------------------
@@ -223,6 +267,28 @@ def test_fit_with_selected_columns_ignores_the_others():
     fitted = model.params["A"]
     assert fitted[CARD_FEATURES.index("score")] > 0.5
     assert fitted[CARD_FEATURES.index("win")] == 0
+
+
+def test_fit_leaves_the_candidate_features_out_unless_asked():
+    races = simulate(params(b_score=1.0, g1_second_size=1.0), races=600, field=7)
+    at = len(CARD_FEATURES) + LINE_FEATURES.index("second_size")
+    assert predict.fit(races).params["A"][at] == 0
+    asked = predict.fit(races, columns=predict.variants()["size"])
+    assert asked.params["A"][at] == pytest.approx(1.0, abs=0.25)
+
+
+def test_variants_are_the_base_and_every_combination_of_candidates():
+    v = predict.variants()
+    assert list(v) == [
+        "now", "size", "contest", "lead",
+        "size+contest", "size+lead", "contest+lead", "size+contest+lead",
+    ]  # fmt: skip
+    assert v["now"] == predict.BASE_FEATURES == predict.DEFAULT_FEATURES
+    assert "second_size" not in v["now"] and "second" in v["now"]
+    assert set(v["size+lead"]) - set(v["now"]) == {
+        "second_size", "third_size", "fourth_plus", "second_x_head_back",
+    }  # fmt: skip
+    assert set(v["size+contest+lead"]) == set(FEATURES)
 
 
 # --- training data from the tables -----------------------------------------------------
@@ -436,6 +502,150 @@ def test_predict_race_needs_a_known_group_with_a_model():
     assert predict.predict_race(model, "Ｓ級特選", rows, None) is None
     assert predict.predict_race(model, "", rows, None) is None
     assert predict.predict_race(model, "Ａ級一般", rows[:1], None) is None
+
+
+# --- comparing feature sets --------------------------------------------------------------
+
+
+def dated(races: list[Race], first: date, per_day: int) -> list[Race]:
+    return [
+        Race(r.group, r.x, r.order, first + timedelta(days=i // per_day))
+        for i, r in enumerate(races)
+    ]
+
+
+def test_walk_forward_fits_on_the_days_before_each_block(monkeypatch):
+    first = date(2026, 9, 1)
+    races = dated(simulate(params(b_score=1.0), races=600, field=5), first, per_day=20)  # 30 days
+    seen, fit = [], predict.fit
+
+    def recording(train, **kwargs):
+        seen.append((min(r.day for r in train), max(r.day for r in train)))
+        return fit(train, **kwargs)
+
+    monkeypatch.setattr(predict, "fit", recording)
+    scored = predict.walk_forward(
+        races, first + timedelta(days=10), first + timedelta(days=30),
+        columns={"now": predict.BASE_FEATURES}, days=10, step=10, min_races=10,
+    )  # fmt: skip
+    assert seen == [
+        (first, first + timedelta(days=9)),
+        (first + timedelta(days=10), first + timedelta(days=19)),
+    ]
+    assert len(scored) == 400 and min(s.race.day for s in scored) == first + timedelta(days=10)
+    for s in scored[:5]:
+        assert s.probs["now"].shape == (5, 3)
+        np.testing.assert_allclose(s.probs["now"].sum(axis=0), [1.0, 2.0, 3.0])
+
+
+def test_walk_forward_leaves_out_a_group_without_a_model():
+    first = date(2026, 9, 1)
+    races = dated(simulate(params(b_score=1.0), races=200, field=5), first, per_day=10)
+    races += [Race("S", r.x, r.order, r.day) for r in races[:30]]  # too few to fit S
+    scored = predict.walk_forward(
+        races, first + timedelta(days=10), first + timedelta(days=20),
+        columns={"now": predict.BASE_FEATURES}, days=10, step=10, min_races=50,
+    )  # fmt: skip
+    assert {s.race.group for s in scored} == {"A"}
+
+
+@pytest.mark.parametrize(
+    ("value", "ci", "halves", "by_group", "expected"),
+    [
+        (-0.010, (-0.014, -0.006), (-0.011, -0.009), (-0.012, -0.004), "入れる"),
+        (-0.010, (-0.014, -0.006), (-0.021, 0.001), (-0.012, -0.004), "保留"),  # one half worse
+        (-0.010, (-0.014, -0.006), (-0.011, -0.009), (-0.016, 0.003), "保留"),  # S worse
+        (-0.0015, (-0.0019, -0.0011), (-0.001, -0.002), (-0.001, -0.002), "入れない"),  # tiny
+        (-0.0015, (-0.0030, -0.0002), (-0.001, -0.002), (-0.001, -0.002), "保留"),  # too small
+        (0.004, (0.001, 0.007), (0.003, 0.005), (0.004, 0.004), "入れない"),  # worse
+        (-0.004, (-0.009, 0.001), (-0.003, -0.005), (-0.004, -0.004), "保留"),  # includes 0
+    ],
+)
+def test_decide_feature(value, ci, halves, by_group, expected):
+    assert predict.decide_feature(value, ci, halves, by_group) == expected
+
+
+def test_compare_adopts_a_feature_that_improves_the_later_days():
+    first = date(2026, 9, 1)
+    truth = params(b_score=1.0, g1_second_size=1.2, g23_second_size=1.2)
+    races = dated(simulate(truth, races=2400, field=7), first, per_day=100)  # 24 days
+    columns = {k: v for k, v in predict.variants().items() if k in ("now", "size")}
+    scored = predict.walk_forward(
+        races, first + timedelta(days=12), first + timedelta(days=24),
+        columns=columns, days=12, step=6, min_races=100,
+    )  # fmt: skip
+    result = predict.compare(scored, n_boot=200)
+    assert result["races"]["men"] == 1200 and result["races"]["S"] == 0
+    size = result["decisions"]["size"]
+    assert size["decision"] == "入れる" and result["adopted"] == "size"
+    assert size["change"] < -0.05 and size["ci95"][1] < 0 and max(size["halves"]) < 0
+    men = result["variants"]["men"]
+    assert men["now"]["log_loss"]["change"] == 0 and "ci95" not in men["now"]["log_loss"]
+    assert men["size"]["brier_top3"]["change"] < 0
+    assert set(result["residuals"]) == {"now", "size"} == set(result["calibration"])
+    assert list(result["decisions"]) == ["size"]  # the other candidates were not fitted
+
+
+def test_compare_does_not_adopt_a_feature_without_an_effect():
+    first = date(2026, 9, 1)
+    races = dated(simulate(params(b_score=1.0), races=2400, field=7), first, per_day=100)
+    columns = {k: v for k, v in predict.variants().items() if k in ("now", "lead")}
+    scored = predict.walk_forward(
+        races, first + timedelta(days=12), first + timedelta(days=24),
+        columns=columns, days=12, step=6, min_races=100,
+    )  # fmt: skip
+    result = predict.compare(scored, n_boot=200)
+    assert result["decisions"]["lead"]["decision"] != "入れる"
+    assert result["adopted"] == "now"
+    assert abs(result["decisions"]["lead"]["change"]) < 0.01
+
+
+def test_compare_residuals_by_cell():
+    # two riders in a line and one alone; the head always wins, the model says a third each
+    x = np.zeros((3, K))
+    x[1, COL["second"]] = 1
+    x[2, COL["solo"]] = 1
+    race = Race("A", x, (0, 1, 2), date(2026, 9, 1))
+    even = np.tile([1 / 3, 2 / 3, 1.0], (3, 1))
+    scored = [predict.Scored(race, {"now": even}) for _ in range(4)]
+    result = predict.compare(scored, n_boot=0)
+    cells = result["residuals"]["now"]["men"]
+    assert cells["head_2"] == {"riders": 4, "win": 0.6667, "top3": 0.0}
+    assert cells["second_2"] == {"riders": 4, "win": -0.3333, "top3": 0.0}
+    assert cells["solo"]["riders"] == 4
+    assert result["variants"]["men"]["now"]["log_loss"]["value"] == pytest.approx(
+        math.log(3), abs=1e-4
+    )
+    assert result["decisions"] == {} and result["adopted"] == "now"
+
+
+def test_predict_compare_command(tmp_path, capsys):
+    import json
+
+    from keirin import cli
+    from keirin.timeutil import date_range
+
+    write_simple_days(tmp_path, list(date_range(date(2026, 9, 1), date(2026, 9, 20))))
+    code = cli.main(
+        ["predict-compare", "--date", "2026-09-11", "--to", "2026-09-20", "--days", "10",
+         "--step", "5", "--min-races", "10", "--boot", "50", "--data-dir", str(tmp_path)]
+    )  # fmt: skip
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert code == 0
+    assert result["period"] == {"from": "2026-09-11", "to": "2026-09-20"}
+    assert result["races"]["men"] == 30 and result["races"]["A"] == 30
+    assert set(result["decisions"]) == {"size", "contest", "lead"}
+    assert len(result["variants"]["men"]) == 8
+    assert "テスト" not in out and "racer" not in out  # aggregates only
+
+
+def test_predict_compare_without_training_data(tmp_path):
+    from keirin import cli
+
+    code = cli.main(["predict-compare", "--date", "2026-09-11", "--to", "2026-09-20",
+                     "--data-dir", str(tmp_path)])  # fmt: skip
+    assert code == 1
 
 
 # --- the predict-eval command ------------------------------------------------------------
