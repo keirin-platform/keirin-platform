@@ -14,8 +14,9 @@ formation (tables/lines) when there is one, and otherwise guesses it from the
 riders' regions (`lines.guess_formation`). Girls' keirin has no lines: every
 rider of an L級 race rides alone.
 
-A fit uses DEFAULT_FEATURES. The other line features are candidates that
-`walk_forward` and `compare` score against it on later days (`keirin predict-compare`).
+A fit uses DEFAULT_FEATURES. `walk_forward` and `compare` score groups of line
+features (CANDIDATES) against the model without them on later days
+(`keirin predict-compare`); the four groups of 2026-11-17 were adopted that way.
 """
 
 from __future__ import annotations
@@ -63,13 +64,16 @@ LINE_FEATURES = (
     "third_x_head",
     "head_size",  # leader x (line size - 2)
     "head_chaser",  # leader whose style is 追
-    # candidates (docs/prediction.md, 2026-11-17): a fit leaves them out unless asked
+    # the groups compared in docs/prediction.md (2026-11-17, all adopted)
     "second_size",  # 番手 x (line size - 2)
     "third_size",  # 3番手 x (line size - 3)
     "fourth_plus",  # 4番手 or further back (on top of third_plus)
     "contested",  # shares the place with another rider (競り)
     "head_contested",  # leader of a line with a contested place behind
     "second_x_head_back",  # 番手 x log1p(the leader's B count)
+    "front_line",  # in the line expected to take the front (前受け; see front_rider)
+    "front_two",  # ... in a race with exactly two lines of two or more riders
+    "front_two_lead",  # ... and its leader has more B than the other line's leader
 )
 FEATURES = CARD_FEATURES + LINE_FEATURES
 KC, KL = len(CARD_FEATURES), len(LINE_FEATURES)
@@ -79,13 +83,15 @@ MIN_RACES = 100
 L2 = 1e-3
 TRAINING_DAYS = 120  # the viewer fits on the latest collected days only (fit time)
 
-CANDIDATES = {  # groups of line features a comparison adds to the base model
+CANDIDATES = {  # groups of line features `variants` adds to the base model
     "size": ("second_size", "third_size", "fourth_plus"),
     "contest": ("contested", "head_contested"),
     "lead": ("second_x_head_back",),
+    "start": ("front_line", "front_two", "front_two_lead"),
 }
+FRONT_NEAR = 2  # S counts within this of the largest count as "about the same"
 BASE_FEATURES = tuple(f for f in FEATURES if not any(f in group for group in CANDIDATES.values()))
-DEFAULT_FEATURES = BASE_FEATURES  # what `fit` uses (the viewer's model)
+DEFAULT_FEATURES = FEATURES  # what `fit` uses (the viewer's model): the base and every group
 
 
 def group_of(race_class: str | None) -> str | None:
@@ -109,6 +115,18 @@ def is_scratched(row: dict[str, Any]) -> bool:
 
 
 # --- features --------------------------------------------------------------------------
+
+
+def front_rider(cars: list[int], starts: list[float], near: float = FRONT_NEAR) -> int | None:
+    """Index of the rider expected to take the S (the place behind the pacer, 前受け):
+    the innermost car among the riders within `near` of the largest S count on the card.
+    Who took the S in a race is not in the data, so this is a guess before the race."""
+    if not cars:
+        return None
+    top = max(starts)
+    return min(
+        (car, i) for i, (car, s) in enumerate(zip(cars, starts, strict=True)) if s >= top - near
+    )[1]
 
 
 def feature_matrix(riders: list[dict[str, Any]], by_car: dict[int, dict[str, Any]]) -> np.ndarray:
@@ -184,6 +202,21 @@ def feature_matrix(riders: list[dict[str, Any]], by_car: dict[int, dict[str, Any
                 x[i, col["third_size"]] = size - 3
             else:
                 x[i, col["fourth_plus"]] = 1
+
+    front = front_rider(
+        [int(r["car_no"]) for r in riders], [_num(r.get("start")) or 0.0 for r in riders]
+    )
+    info = lines[front] if front is not None else None
+    if info and int(info["line_size"]) >= 2:
+        front_no = int(info["line_no"])
+        two = len(head_back) == 2  # lines of two or more riders
+        others = [b for line_no, b in head_back.items() if line_no != front_no]
+        lead = two and head_back.get(front_no, 0.0) > others[0]
+        for i, member in enumerate(lines):
+            if member and int(member["line_no"]) == front_no:
+                x[i, col["front_line"]] = 1
+                x[i, col["front_two"]] = two
+                x[i, col["front_two_lead"]] = lead
     return x
 
 
@@ -374,11 +407,13 @@ def fit(
     min_races: int = MIN_RACES,
     l2: float = L2,
     columns: tuple[str, ...] | None = None,
+    init: Model | None = None,
 ) -> Model:
     """Maximum likelihood per group (groups with fewer than `min_races` are left out).
 
     `columns` restricts the model to those features (the others get a weight of 0),
     e.g. ("score", "no_score") for a score-only baseline. The default is DEFAULT_FEATURES.
+    `init` starts the search from another model's weights (faster for a larger variant).
     """
     keep = np.array([f in (DEFAULT_FEATURES if columns is None else columns) for f in FEATURES])
     groups: dict[str, list[Race]] = defaultdict(list)
@@ -389,9 +424,8 @@ def fit(
         if len(members) < min_races:
             continue
         x, mask, order = _pack(members, keep)
-        result = minimize(
-            _objective, np.zeros(N_PARAMS), args=(x, mask, order, l2), jac=True, method="L-BFGS-B"
-        )
+        start = init.params[group].copy() if init and group in init.params else np.zeros(N_PARAMS)
+        result = minimize(_objective, start, args=(x, mask, order, l2), jac=True, method="L-BFGS-B")
         if not result.success:
             log.warning("%s: the fit did not converge (%s)", group, result.message)
         theta = result.x
@@ -546,9 +580,10 @@ SEGMENTS = ("men", "A", "S", "S7", "S9", "contested")
 
 
 def variants(candidates: dict[str, tuple[str, ...]] | None = None) -> dict[str, tuple[str, ...]]:
-    """The base model ("now") and every combination of candidate groups added to it."""
+    """The base model ("base": no candidate group) and every combination of candidate
+    groups added to it."""
     candidates = CANDIDATES if candidates is None else candidates
-    out = {"now": BASE_FEATURES}
+    out = {"base": BASE_FEATURES}
     for r in range(1, len(candidates) + 1):
         for combo in itertools.combinations(candidates, r):
             out["+".join(combo)] = BASE_FEATURES + tuple(f for g in combo for f in candidates[g])
@@ -611,7 +646,10 @@ def walk_forward(
     while block < end:
         following = min(block + timedelta(days=step), end)
         train = [r for r in dated if block - timedelta(days=days) <= r.day < block]
-        models = {name: fit(train, min_races=min_races, columns=c) for name, c in columns.items()}
+        models: dict[str, Model] = {}
+        for name, c in columns.items():  # the later variants start from the first one's weights
+            first = next(iter(models.values()), None)
+            models[name] = fit(train, min_races=min_races, columns=c, init=first)
         for race in dated:
             if block <= race.day < following and all(
                 race.group in m.params for m in models.values()
@@ -675,7 +713,7 @@ def decide_feature(
 
 
 def compare(
-    scored: list[Scored], *, base: str = "now", n_boot: int = 2000, seed: int = 0
+    scored: list[Scored], *, base: str = "base", n_boot: int = 2000, seed: int = 0
 ) -> dict[str, Any]:
     """How the variants score the same races, against `base` (aggregates only).
 

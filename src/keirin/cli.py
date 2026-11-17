@@ -193,6 +193,12 @@ def cmd_predict_eval(args: argparse.Namespace) -> int:
 
 def cmd_predict_compare(args: argparse.Namespace) -> int:
     columns = predict.variants()
+    if args.variants:
+        unknown = [name for name in args.variants if name not in columns]
+        if unknown:
+            log.error("unknown variants %s (choose from %s)", unknown, ", ".join(columns))
+            return 1
+        columns = {name: columns[name] for name in ("base", *args.variants) if name in columns}
     races = predict.load_races(
         args.data_dir, start=args.date - timedelta(days=args.days), end=args.to + timedelta(days=1)
     )
@@ -259,6 +265,24 @@ def cmd_line_positions(args: argparse.Namespace) -> int:
         "period": {"from": args.date.isoformat(), "to": args.to.isoformat()},
         "model": {"fitted_on": [str(model.first_day), str(model.last_day)], "races": model.races},
         **research.line_position_summary(races, n_boot=args.boot),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_front_start(args: argparse.Namespace) -> int:
+    train = predict.load_races(
+        args.data_dir, start=args.date - timedelta(days=args.days), end=args.date
+    )
+    model = predict.fit(train, min_races=args.min_races, columns=("score", "no_score"))
+    if not model.params:
+        log.error("not enough races before %s to fit the score-only model", args.date)
+        return 1
+    races = research.load_line_races(args.data_dir, args.date, args.to + timedelta(days=1), model)
+    result = {
+        "period": {"from": args.date.isoformat(), "to": args.to.isoformat()},
+        "model": {"fitted_on": [str(model.first_day), str(model.last_day)], "races": model.races},
+        **research.front_start_summary(races, n_boot=args.boot),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -473,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--days", type=int, default=predict.TRAINING_DAYS, help="fit on this many days before"
     )
     p.add_argument("--step", type=int, default=14, help="refit every this many days")
+    p.add_argument(
+        "--variants",
+        nargs="+",
+        help="compare only these variants with the base (default: every combination)",
+    )
     p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
     p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
     p.add_argument("--data-dir", type=Path, default=Path("."))
@@ -516,6 +545,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
     p.add_argument("--data-dir", type=Path, default=Path("."))
     p.set_defaults(func=cmd_line_positions)
+
+    p = sub.add_parser(
+        "front-start",
+        help="the leading line when it is expected to take the front, in two-line races "
+        "(keirin-research, JSON)",
+    )
+    p.add_argument("--date", type=date.fromisoformat, required=True, help="first day")
+    p.add_argument("--to", type=date.fromisoformat, required=True, help="last day (inclusive)")
+    p.add_argument(
+        "--days", type=int, default=predict.TRAINING_DAYS, help="fit on this many days before"
+    )
+    p.add_argument("--min-races", type=int, default=predict.MIN_RACES, help="per group")
+    p.add_argument("--boot", type=int, default=2000, help="bootstrap resamples")
+    p.add_argument("--data-dir", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_front_start)
 
     p = sub.add_parser(
         "car-order", help="car numbers vs scores and the car-1 effect (keirin-research, JSON)"

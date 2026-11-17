@@ -813,3 +813,121 @@ def test_cli_line_positions_prints_aggregates_only(tmp_path, capsys):
     assert set(result["decisions"]) == {*research.PRIMARY, "back_line_winner_share"}
     assert "000001" not in out and "テスト" not in out and "東京" not in out
     assert "NaN" not in out and "Infinity" not in out
+
+
+# --- the front line (前受け) ----------------------------------------------------------------
+
+CARS = (1, 2, 3, 4, 5, 6, 7)
+
+
+def two_lines(order, starts, *, backs=(5, 0, 0, 2, 0, 0, 0), text="123/456/7", **fields):
+    """Two lines (entries 0-2 and 3-5) and a rider alone; entry 0 heads the leading line."""
+    fields = {"back": 0, "home": 0, **fields}
+    return made(text, order, cars=CARS, starts=starts, backs=backs, **fields)
+
+
+def test_front_columns_of_a_two_line_race():
+    # entry 4 (the other line) has far more S: the other line is expected in front
+    c = research._front_columns(two_lines((0, 1, 3), (0, 0, 0, 0, 6, 0, 0)))
+    assert c["two_lines"] == 1 and "tied" not in c
+    for rule in ("near", "most"):
+        key = f"{rule}:all:other:"
+        assert (c[key + "n"], c[key + "win"], c[key + "led"]) == (1, 1, 1)
+        assert c[key + "ewin"] == pytest.approx(3 / 7)
+        assert (c[key + "other_top3"], c[key + "shut"]) == (1, 0)
+        assert c[key + "other_etop3"] == pytest.approx(9 / 7)
+    assert c["near:A:other:n"] == 1 and c["near:apart:other:n"] == 1
+    assert "near:close:other:n" not in c and "near:no_solo:other:n" not in c
+
+
+def test_front_columns_give_the_front_to_the_inner_car_when_the_counts_are_close():
+    c = research._front_columns(two_lines((3, 4, 5), (0, 0, 0, 0, 2, 0, 0), back=3))
+    assert c["near:all:lead:n"] == 1 and c["most:all:other:n"] == 1  # the rules differ
+    assert c["near:close:lead:n"] == 1
+    assert (c["near:all:lead:win"], c["near:all:lead:led"], c["near:all:lead:shut"]) == (0, 0, 0)
+    assert c["near:all:lead:other_top3"] == 3
+
+
+def test_front_columns_of_a_rider_alone_in_front_and_of_a_race_without_riders_alone():
+    c = research._front_columns(two_lines((0, 1, 2), (0, 0, 0, 0, 0, 0, 9)))
+    assert c["near:all:solo:n"] == 1 and c["near:all:solo:shut"] == 1
+    full = two_lines((0, 1, 2), (0, 0, 0, 0, 0, 0, 9), text="1234/567", backs=(1, 0, 0, 0, 4, 0, 0))
+    c = research._front_columns(full)  # entry 4 heads the leading line now
+    assert c["near:no_solo:lead:n"] == 1 and c["near:all:lead:win"] == 0
+
+
+def test_front_columns_skip_other_races():
+    starts = (0,) * 7
+    three = made("123/45/67", (0, 1, 2), cars=CARS, starts=starts, backs=(5, 0, 0, 2, 0, 1, 0))
+    fought = made("1(23)4/567", (0, 1, 2), cars=CARS, starts=starts, backs=(5, 0, 0, 0, 2, 0, 0))
+    assert research._front_columns(three) == {} and research._front_columns(fought) == {}
+    assert research._front_columns(made("123/456/7", (0, 1, 2))) == {}  # no card counts
+    tied = research._front_columns(two_lines((0, 1, 2), starts, backs=(2, 0, 0, 2, 0, 0, 0)))
+    assert tied == {"two_lines": 1, "tied": 1}
+
+
+def test_front_start_summary_compares_the_leading_line_in_front_and_not():
+    races = []
+    for i in range(40):
+        day = DAY + timedelta(days=i)
+        # in front: the leading line fills the first three; not in front: the other line does
+        races.append(two_lines((0, 1, 2), (4, 0, 0, 0, 0, 0, 0), day=day))
+        races.append(two_lines((3, 4, 5), (0, 0, 0, 0, 6, 0, 0), day=day, back=3, home=3))
+    races.append(made("123/45/67", (0, 1, 2), cars=CARS, starts=(0,) * 7, backs=(1,) * 7))
+    summary = research.front_start_summary(races, n_boot=200)
+    assert summary["races"] == {"two_lines": 80, "back_counts_tied": 0, "used": 80}
+    table = summary["tables"]["near"]["all"]
+    assert table["lead"]["races"] == 40 and table["other"]["races"] == 40
+    assert table["lead"]["lead_line_win"] == 1.0 and table["other"]["lead_line_win"] == 0.0
+    assert table["lead"]["expected"] == pytest.approx(3 / 7, abs=1e-4)
+    assert table["lead"]["other_line_shut_out"] == 1.0 and table["other"]["other_line_top3"] == 3.0
+    assert table["lead"]["lead_head_home_and_back"] == 1.0
+    decision = summary["decision"]
+    assert decision["value"] == pytest.approx(1.0) and decision["decision"] == "正の効果"
+    assert decision["practical"] == research.FRONT_PRACTICAL
+    assert table["front_minus_not"]["other_line_shut_out"]["value"] == pytest.approx(1.0)
+    assert (
+        "decision"
+        not in summary["tables"]["most"]["all"]["front_minus_not"]["lead_line_win_excess"]
+    )
+    assert summary["tables"]["near"]["S"]["lead"]["races"] == 0
+
+
+def test_front_start_summary_holds_the_line_sizes_fixed():
+    races = []
+    for i in range(40):
+        day = DAY + timedelta(days=i)
+        # 3-3 and a rider alone: in front or not, the leading line wins every other race
+        races.append(two_lines((0, 1, 2) if i % 2 else (3, 4, 5), (4, 0, 0, 0, 0, 0, 0), day=day))
+        races.append(two_lines((0, 1, 2) if i % 2 else (3, 4, 5), (0, 0, 0, 0, 6, 0, 0), day=day))
+        # 4-3: the long leading line is always expected in front and always wins
+        races.append(
+            two_lines((0, 1, 2), (4, 0, 0, 0, 0, 0, 0), day=day, text="1234/567",
+                      backs=(5, 0, 0, 0, 2, 0, 0))
+        )  # fmt: skip
+    summary = research.front_start_summary(races, n_boot=100)
+    raw = summary["tables"]["near"]["all"]["front_minus_not"]["lead_line_win_excess"]["value"]
+    adjusted = summary["size_adjusted"]["near"]["lead_line_win_excess"]
+    assert raw == pytest.approx(0.1786, abs=1e-4)  # the long line flatters the line in front
+    assert adjusted["value"] == pytest.approx(0.0, abs=1e-9)  # within 3-3 there is no difference
+    assert summary["line_sizes"]["3-3"] == {
+        "lead_in_front": 40, "other_in_front": 40, "lead_line_win_excess": 0.0,
+    }  # fmt: skip
+    assert summary["line_sizes"]["4-3"]["other_in_front"] == 0
+
+
+def test_cli_front_start_prints_aggregates_only(tmp_path, capsys):
+    train_day = DAY - timedelta(days=1)
+    write_day(tmp_path, train_day, {("01", r): ("Ａ級予選", seven()) for r in range(1, 6)})
+    riders = seven()
+    riders[0]["back"], riders[5]["start"] = 5, 7
+    write_day(tmp_path, DAY, {("01", 1): ("Ａ級予選", riders)}, formation_rows("01", 1, "1234/567"))
+    args = ["front-start", "--date", DAY.isoformat(), "--to", DAY.isoformat(), "--days", "3"]
+    assert cli.main([*args, "--min-races", "1", "--boot", "20", "--data-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert result["races"] == {"two_lines": 1, "back_counts_tied": 0, "used": 1}
+    assert result["tables"]["near"]["all"]["other"]["races"] == 1  # car 6 takes the S
+    assert result["tables"]["near"]["all"]["other"]["lead_line_win"] == 1.0
+    assert "000001" not in out and "テスト" not in out and "東京" not in out
+    assert "NaN" not in out and "Infinity" not in out
